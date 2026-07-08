@@ -36,21 +36,26 @@ except ImportError:  # pragma: no cover - script execution fallback
 
 
 def train_image(layer, x, lr, max_epochs, min_persistence, persist_patience):
-    """Present ``x`` repeatedly until convergence. Returns a per-image summary.
+    """Present ``x`` repeatedly until convergence.
 
     Convergence = cumulative persistence (condensado.md §7): fraction of the
     currently-firing neurons that have been lit without interruption for at
     least ``persist_patience`` epochs reaches ``min_persistence``.
+
+    Returns ``(summary, acts)`` where ``acts`` is the list of this image's
+    activation vectors, one per epoch trained, for the evolution sequence.
     """
     thr = layer.fire_threshold
     run = np.zeros(layer.n_out, dtype=np.int64)  # per-neuron unbroken firing streak
     converged_at = None
     n_fired = 0
     pers = 0.0
+    acts: list[np.ndarray] = []
     for e in range(max_epochs):
         layer.learn_sample(x, lr)           # one presentation of this single image
         layer.epochs_trained += 1
-        a = layer.activation(x)
+        a = layer.activation(x).astype(np.float32)
+        acts.append(a)
         fired = a >= thr
         run = np.where(fired, run + 1, 0)
         n_fired = int(fired.sum())
@@ -58,7 +63,7 @@ def train_image(layer, x, lr, max_epochs, min_persistence, persist_patience):
         if pers >= min_persistence:
             converged_at = e + 1
             break
-    return {
+    summary = {
         "epochs_used": converged_at if converged_at is not None else max_epochs,
         "converged": converged_at is not None,
         "n_fired": n_fired,
@@ -66,6 +71,7 @@ def train_image(layer, x, lr, max_epochs, min_persistence, persist_patience):
         "winner": int(a.argmax()),
         "winner_activation": round(float(a.max()), 4),
     }
+    return summary, acts
 
 
 def main() -> None:
@@ -80,6 +86,8 @@ def main() -> None:
                     help="stop an image when cumulative persistence reaches this")
     ap.add_argument("--persist-patience", type=int, default=5,
                     help="epochs a neuron must stay lit to count as persistent")
+    ap.add_argument("--sequence", default="experiments/evolution/sequence.npz",
+                    help="evolution sequence file to (over)write for the webapp viewer")
     ap.add_argument("--resume", default=None, help="resume from a model.npz")
     # fresh-layer hyperparameters (used only when --resume is not given)
     ap.add_argument("--n-in", type=int, default=784)
@@ -108,6 +116,13 @@ def main() -> None:
         layer = build_layer(args)
         print(f"init {layer}")
 
+    side = int(round(X.shape[1] ** 0.5))
+    # Evolution sequence: step 0 = state before training (on image 0), then one
+    # step per epoch. ``imgseq`` tracks which image each step was trained on so
+    # the viewer's "Fixed image" panel follows the sequential run.
+    seq = [layer.activation(X[0]).astype(np.float32)]
+    imgseq = [(X[0] * 255).astype(np.uint8)]
+
     csv_path = os.path.join(args.run, "sequential.csv")
     cols = ["image", "epochs_used", "converged", "n_fired", "persistence",
             "winner", "winner_activation", "total_epochs"]
@@ -115,10 +130,14 @@ def main() -> None:
         writer = csv.DictWriter(f, fieldnames=cols)
         writer.writeheader()
         for i in range(len(X)):
-            info = train_image(
+            info, acts = train_image(
                 layer, X[i], args.lr, args.max_epochs,
                 args.min_persistence, args.persist_patience,
             )
+            img_u8 = (X[i] * 255).astype(np.uint8)
+            for a in acts:
+                seq.append(a)
+                imgseq.append(img_u8)
             row = {"image": i, "total_epochs": layer.epochs_trained, **info}
             writer.writerow({k: row[k] for k in cols})
             f.flush()
@@ -134,6 +153,22 @@ def main() -> None:
     layer.save(model_path)
     print(f"saved {model_path}")
     print(f"saved {csv_path}")
+
+    os.makedirs(os.path.dirname(args.sequence) or ".", exist_ok=True)
+    np.savez(
+        args.sequence,
+        seq=np.round(np.stack(seq), 4).astype(np.float32),
+        image=imgseq[0],
+        imgseq=np.stack(imgseq),
+        side=np.int64(side),
+        map_h=np.int64(layer.grid_h),
+        map_w=np.int64(layer.grid_w),
+        steps=np.int64(len(seq) - 1),
+        image_index=np.int64(-1),  # -1 = sequential run over the whole set
+        fire_threshold=np.float64(layer.fire_threshold),
+        converged_at=np.int64(-1),
+    )
+    print(f"saved {args.sequence}  seq={np.stack(seq).shape} (steps+1, n_out)")
 
 
 if __name__ == "__main__":

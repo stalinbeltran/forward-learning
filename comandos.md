@@ -136,8 +136,18 @@ Paso 2 — red nueva, entrenamiento secuencial hasta converger cada imagen:
 - `--max-epochs` — tope por imagen si nunca converge (por defecto `200`).
 - `--lr` / `--inhib` — tasa de aprendizaje y malla de inhibición lateral.
 - `--resume model.npz` — (opcional) parte de una red ya entrenada.
+- `--sequence` — archivo de evolución a escribir para el visor (por defecto
+  `experiments/evolution/sequence.npz`, el mismo que sirve `webapp_evolution.py`).
 - Salida en `--run`: `model.npz` (red final) y `sequential.csv` (una fila por
-  imagen con la época en que convergió, el ganador y su activación).
+  imagen con la época en que convergió, el ganador y su activación); **además**
+  escribe la secuencia de evolución en `--sequence`.
+
+**Verlo en el app:** este entrenador escribe la secuencia igual que
+`gen_evolution.py`, así que con `webapp_evolution.py` corriendo (paso 3) basta
+pulsar **Refrescar**. Como aquí se entrenan varias imágenes, el panel *Fixed
+image* va cambiando y muestra la recta que se está entrenando en cada paso (el
+archivo incluye un `imgseq` con la imagen por paso; los runs de una sola imagen
+lo omiten y el panel queda fijo, como antes).
 
 > Nota: con el criterio estricto por defecto (persistencia 0.7, umbral de disparo
 > 0.40) no todas las imágenes convergen dentro del tope; el ganador aprende el

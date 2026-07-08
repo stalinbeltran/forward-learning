@@ -79,7 +79,7 @@ PAGE = """<!doctype html>
     <div class="fired">bright = persistently active</div></div>
 </main>
 <script>
-let META=null, SEQ=null, step=0, trail=null, timer=null, playing=true, thTouched=false;
+let META=null, SEQ=null, IMGSEQ=null, IMG=null, step=0, trail=null, timer=null, playing=true, thTouched=false;
 const el = id => document.getElementById(id);
 
 function drawImg(canvas, arr, side){
@@ -107,6 +107,7 @@ function resetTrail(){ trail=new Float32Array(META.map_w*META.map_h); }
 function render(){
   const th=parseFloat(el('th').value), rate=parseFloat(el('rt').value);
   el('ep').textContent=step;
+  if(IMGSEQ) drawImg(el('img'), IMGSEQ[step], META.side);  // fixed panel follows the trained image
   el('fired').textContent=drawNow(SEQ[step], th);
   updateTrail(SEQ[step], th, rate);
 }
@@ -125,10 +126,11 @@ async function load(manual){
     if(meta.error){ el('status').textContent='sin datos: '+meta.error; return; }
     const seq=(await (await fetch('/api/seq')).json()).seq;
     const img=(await (await fetch('/api/image')).json()).image;
-    META=meta; SEQ=seq; step=0;
+    const imgseq=meta.has_imgseq ? (await (await fetch('/api/imgseq')).json()).imgseq : null;
+    META=meta; SEQ=seq; IMG=img; IMGSEQ=imgseq; step=0;
     el('steps').textContent=SEQ.length-1;
     if(!thTouched){ el('th').value=META.fire_threshold; el('thv').textContent=META.fire_threshold.toFixed(2); }
-    drawImg(el('img'), img, META.side); resetTrail(); render();
+    drawImg(el('img'), IMGSEQ?IMGSEQ[0]:img, META.side); resetTrail(); render();
     const t=new Date().toLocaleTimeString();
     el('status').textContent=(manual?'refrescado ':'cargado ')+t+' · '+META.mtime;
   }catch(e){ el('status').textContent='error al cargar: '+e; }
@@ -138,10 +140,16 @@ async function load(manual){
 
 
 def _load_file(path):
-    """Read the sequence file; return (meta, seq, image) or (None, None, None)."""
+    """Read the sequence file; return (meta, seq, image, imgseq).
+
+    ``imgseq`` (one image per step) is optional: sequential runs
+    (``train_sequential.py``) write it so the fixed-image panel follows the
+    image being trained; single-image runs (``gen_evolution.py``) omit it.
+    """
     d = np.load(path, allow_pickle=False)
     seq = d["seq"].astype(np.float32)
     image = d["image"].astype(np.uint8)
+    imgseq = d["imgseq"].astype(np.uint8) if "imgseq" in d.files else None
     meta = {
         "steps": int(d["steps"]),
         "side": int(d["side"]),
@@ -149,11 +157,12 @@ def _load_file(path):
         "map_w": int(d["map_w"]),
         "fire_threshold": float(d["fire_threshold"]),
         "image_index": int(d["image_index"]),
+        "has_imgseq": imgseq is not None,
         "mtime": __import__("time").strftime(
             "%H:%M:%S", __import__("time").localtime(os.path.getmtime(path))
         ),
     }
-    return meta, seq, image
+    return meta, seq, image, imgseq
 
 
 def make_handler(path):
@@ -163,15 +172,20 @@ def make_handler(path):
     def payloads():
         if not os.path.exists(path):
             err = json.dumps({"error": f"no existe {path} (corre gen_evolution.py)"}).encode()
-            return err, err, err
+            return err, err, err, err
         mtime = os.path.getmtime(path)
         if cache["mtime"] != mtime:
-            meta, seq, image = _load_file(path)
+            meta, seq, image, imgseq = _load_file(path)
             cache["mtime"] = mtime
+            imgseq_p = (
+                json.dumps({"imgseq": imgseq.tolist()}).encode()
+                if imgseq is not None else json.dumps({"imgseq": None}).encode()
+            )
             cache["payloads"] = (
                 json.dumps(meta).encode(),
                 json.dumps({"seq": np.round(seq, 4).tolist()}).encode(),
                 json.dumps({"image": image.tolist()}).encode(),
+                imgseq_p,
             )
         return cache["payloads"]
 
@@ -190,13 +204,15 @@ def make_handler(path):
             if self.path == "/" or self.path.startswith("/index"):
                 self._send(PAGE.encode(), "text/html; charset=utf-8")
                 return
-            meta_p, seq_p, image_p = payloads()
+            meta_p, seq_p, image_p, imgseq_p = payloads()
             if self.path == "/api/meta":
                 self._send(meta_p, "application/json")
             elif self.path == "/api/seq":
                 self._send(seq_p, "application/json")
             elif self.path == "/api/image":
                 self._send(image_p, "application/json")
+            elif self.path == "/api/imgseq":
+                self._send(imgseq_p, "application/json")
             else:
                 self.send_error(404)
 
