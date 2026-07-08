@@ -104,6 +104,49 @@ Parámetros:
 
 ---
 
+## 2c. Entrenar un SET de rectas, imagen por imagen (secuencial)
+
+Flujo distinto del de arriba: en vez de una sola imagen, se genera un **set** de
+rectas y una **red nueva** las aprende **una a una** — cada imagen se presenta
+repetidamente hasta cumplir el criterio de convergencia (persistencia acumulada,
+condensado.md §7), y solo entonces se pasa a la siguiente, sobre la **misma** red.
+
+Paso 1 — generar el set (10 rectas horizontales a distintas alturas):
+
+```powershell
+.venv\Scripts\python.exe hebbian\generate_hlines.py --n 10 --out data\processed\hlines_set\hlines.npz --preview
+```
+
+- `--n` — número de rectas (por defecto `10`).
+- `--spread` — offset vertical máximo en px; las rectas se reparten en
+  `[-spread, spread]` (por defecto `11`).
+- `--width` / `--size` — grosor y lado de la imagen.
+- `--preview` — escribe una tira PNG con todas las rectas para revisar a ojo.
+
+Paso 2 — red nueva, entrenamiento secuencial hasta converger cada imagen:
+
+```powershell
+.venv\Scripts\python.exe hebbian\train_sequential.py --dataset data\processed\hlines_set\hlines.npz --run experiments\hlines_seq --min-persistence 0.7 --lr 0.15 --inhib
+```
+
+- `--dataset` — el `.npz` del set (paso 1).
+- `--min-persistence` — fracción de persistencia que marca la convergencia de
+  cada imagen (por defecto `0.7`); mismo criterio que `gen_evolution.py`.
+- `--persist-patience` — épocas seguidas encendida para contar como persistente (`5`).
+- `--max-epochs` — tope por imagen si nunca converge (por defecto `200`).
+- `--lr` / `--inhib` — tasa de aprendizaje y malla de inhibición lateral.
+- `--resume model.npz` — (opcional) parte de una red ya entrenada.
+- Salida en `--run`: `model.npz` (red final) y `sequential.csv` (una fila por
+  imagen con la época en que convergió, el ganador y su activación).
+
+> Nota: con el criterio estricto por defecto (persistencia 0.7, umbral de disparo
+> 0.40) no todas las imágenes convergen dentro del tope; el ganador aprende el
+> coseno perfecto (`act≈1.0`) pero el borde del conjunto que dispara fluctúa por
+> la inhibición. Para que converjan más, sube `--fire-threshold` (conjunto más
+> chico y estable), baja `--min-persistence`, o sube `--max-epochs`.
+
+---
+
 ## 3. Servir la visualización (se deja corriendo)
 
 ```powershell
