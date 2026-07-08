@@ -44,9 +44,9 @@ import numpy as np
 class TruthTableRule:
     """Regla de la tabla de verdad, vectorizada sobre toda la matriz de pesos."""
 
-    n: float = 2.0   # factor de aprendizaje disparado
-    m: float = 1.0   # factor de desaprendizaje disparado
-    hr: float = 0.5  # inhibition rate
+    n: float = 1.1   # factor de aprendizaje disparado
+    m: float = 0.3   # factor de desaprendizaje disparado
+    hr: float = 0.1  # inhibition rate
 
     def delta(
         self,
