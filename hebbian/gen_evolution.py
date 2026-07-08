@@ -32,15 +32,38 @@ except ImportError:  # pragma: no cover - script fallback
 DEFAULT_OUT = "experiments/evolution/sequence.npz"
 
 
-def build_sequence(layer, X, fixed, epochs, lr, seed):
-    """Train epoch by epoch; record the fixed image's activation each time."""
+def build_sequence(layer, X, fixed, epochs, lr, seed,
+                   min_persistence=None, persist_patience=5):
+    """Train epoch by epoch; record the fixed image's activation each time.
+
+    Convergence / early-stop criterion (condensado.md §7) is *cumulative
+    persistence*: the fraction of the currently-firing set that has been lit
+    without interruption for at least ``persist_patience`` epochs. Training
+    stops as soon as that fraction reaches ``min_persistence`` (if given).
+    """
     rng = np.random.default_rng(seed)
-    seq = [layer.activation(fixed).astype(np.float32)]  # step 0 = before training
+    thr = layer.fire_threshold
+    a0 = layer.activation(fixed).astype(np.float32)
+    seq = [a0]  # step 0 = before training
+    run = (a0 >= thr).astype(np.int64)  # per-neuron unbroken firing streak
+    converged_at = None
     for e in range(epochs):
         layer.train_epoch(X, lr, rng=rng)
-        seq.append(layer.activation(fixed).astype(np.float32))
-        print(f"epoch {e+1}/{epochs}  fired={int((seq[-1] >= layer.fire_threshold).sum())}")
-    return np.stack(seq)
+        a = layer.activation(fixed).astype(np.float32)
+        seq.append(a)
+        fired = a >= thr
+        run = np.where(fired, run + 1, 0)
+        n_fired = int(fired.sum())
+        pers = (int((run >= persist_patience).sum()) / n_fired) if n_fired else 0.0
+        print(f"epoch {e+1}/{epochs}  fired={n_fired}  persistence={pers:.3f}")
+        if min_persistence is not None and pers >= min_persistence:
+            converged_at = e + 1
+            print(f"CONVERGED at epoch {converged_at}: persistence {pers:.3f} "
+                  f">= {min_persistence} (>= {persist_patience} epochs lit)")
+            break
+    if min_persistence is not None and converged_at is None:
+        print(f"did NOT reach persistence {min_persistence} within {epochs} epochs")
+    return np.stack(seq), converged_at
 
 
 def main() -> None:
@@ -49,8 +72,12 @@ def main() -> None:
     ap.add_argument("--key", default="images")
     ap.add_argument("--model", default=None, help="start from this model.npz (else fresh)")
     ap.add_argument("--image-index", type=int, default=0)
-    ap.add_argument("--epochs", type=int, default=80)
+    ap.add_argument("--epochs", type=int, default=80, help="max epochs (upper bound)")
     ap.add_argument("--lr", type=float, default=0.15)
+    ap.add_argument("--min-persistence", type=float, default=None,
+                    help="stop when cumulative persistence reaches this fraction (e.g. 0.7)")
+    ap.add_argument("--persist-patience", type=int, default=5,
+                    help="epochs a neuron must stay lit to count as persistent")
     ap.add_argument("--out", default=DEFAULT_OUT, help="sequence file to (over)write")
     # fresh-layer hyperparameters (used only when --model is not given)
     ap.add_argument("--n-in", type=int, default=784)
@@ -80,8 +107,12 @@ def main() -> None:
         layer = build_layer(args)
         print(f"fresh {layer}")
 
-    print(f"building {args.epochs}-epoch sequence for image {args.image_index}...")
-    seq = build_sequence(layer, X, fixed, args.epochs, args.lr, args.seed)
+    print(f"building up-to-{args.epochs}-epoch sequence for image {args.image_index}...")
+    seq, converged_at = build_sequence(
+        layer, X, fixed, args.epochs, args.lr, args.seed,
+        min_persistence=args.min_persistence,
+        persist_patience=args.persist_patience,
+    )
 
     side = int(round(X.shape[1] ** 0.5))
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
@@ -92,9 +123,10 @@ def main() -> None:
         side=np.int64(side),
         map_h=np.int64(layer.grid_h),
         map_w=np.int64(layer.grid_w),
-        steps=np.int64(args.epochs),
+        steps=np.int64(len(seq) - 1),
         image_index=np.int64(args.image_index),
         fire_threshold=np.float64(layer.fire_threshold),
+        converged_at=np.int64(-1 if converged_at is None else converged_at),
     )
     print(f"wrote {args.out}  seq={seq.shape} (steps+1, n_out)")
 

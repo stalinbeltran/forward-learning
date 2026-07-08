@@ -13,6 +13,11 @@ entrada** y ver, paso a paso en la webapp, cómo las neuronas van aprendiendo.
 
 Prefijo del intérprete del entorno virtual: `.venv\Scripts\python.exe`
 
+> **Mantenimiento:** este archivo es la referencia viva de comandos. Cada vez que
+> un script cambie (nuevos flags, defaults distintos, rutas nuevas), **todos los
+> comandos de aquí deben actualizarse** para reflejarlo. No dejar ejemplos
+> desfasados.
+
 ---
 
 ## 1. Definir la imagen de entrada
@@ -22,6 +27,25 @@ La entrada la determina el dataset. Genera la línea que quieras
 
 ```powershell
 .venv\Scripts\python.exe hebbian\single_line.py --angle 0 --out data\processed\hline\hline.npz
+```
+
+Parámetros:
+
+- `--angle` — ángulo en grados (`0` = horizontal, `90` = vertical).
+- `--offset-y` — desplazamiento vertical en px. **Negativo = más arriba**,
+  positivo = más abajo.
+- `--offset-x` — desplazamiento lateral en px. Positivo = derecha,
+  negativo = izquierda.
+- `--width` — grosor de la línea en px (por defecto `2`).
+- `--size` — lado de la imagen (por defecto `28`).
+- `--out` — ruta del `.npz` de salida.
+
+Rango útil del offset: ~±13 px antes de que la recta se salga del canvas 28×28.
+En una horizontal, `--offset-x` no cambia nada (la recta cruza todo el ancho); el
+offset lateral se nota en verticales u oblicuas. Ejemplo, horizontal 5 px arriba:
+
+```powershell
+.venv\Scripts\python.exe hebbian\single_line.py --angle 0 --offset-y -5 --out data\processed\hline\hline.npz
 ```
 
 ---
@@ -39,11 +63,44 @@ Parámetros:
 - `--dataset` — archivo `.npz` de imágenes a usar (tu línea).
 - `--image-index 0` — cuál imagen dentro del dataset (útil si el `.npz` tiene
   varias; con `lines.npz` puedes probar `--image-index 5`, etc.).
-- `--epochs` / `--lr` — cuántos pasos y qué tan rápido aprende.
+- `--epochs` / `--lr` — máximo de pasos (cota superior) y qué tan rápido aprende.
 - `--inhib` — activa la inhibición lateral.
+- `--min-persistence` — **stop por convergencia**. Detiene el entrenamiento
+  cuando la *persistencia acumulada* alcanza esta fracción (p. ej. `0.7`): el
+  0.7 del conjunto que dispara son las **mismas** neuronas encendidas sin
+  interrupción ≥ `--persist-patience` épocas. Sin esta flag no hay early-stop.
+- `--persist-patience` — épocas que una neurona debe llevar encendida seguida
+  para contar como persistente (por defecto `5`).
 - `--out` — ruta del archivo de secuencia (por defecto el que lee el server).
 - `--model experiments\smoke\model.npz` — (opcional) parte de una red ya
   entrenada en vez de pesos frescos.
+
+Ejemplo con stop por convergencia (deja `--epochs` alto como cota; para solo):
+
+```powershell
+.venv\Scripts\python.exe hebbian\gen_evolution.py --dataset data\processed\hline\hline.npz --image-index 0 --epochs 300 --lr 0.15 --inhib --min-persistence 0.7
+```
+
+---
+
+## 2b. Analizar / graficar la convergencia de una secuencia
+
+Lee `sequence.npz` y grafica las curvas de persistencia del conjunto que dispara
+(retención, Jaccard y **persistencia acumulada** — esta última es el criterio de
+convergencia, alineada con `--min-persistence` de arriba). Reporta la época de
+convergencia y escribe `convergence.png` + `convergence.csv`:
+
+```powershell
+.venv\Scripts\python.exe hebbian\analyze_convergence.py --min-persistence 0.7 --patience 5
+```
+
+Parámetros:
+
+- `--file` — secuencia a analizar (por defecto `experiments/evolution/sequence.npz`).
+- `--min-persistence` — fracción de persistencia que marca la convergencia
+  (debe coincidir con la usada al entrenar).
+- `--patience` — épocas seguidas encendida para contar como persistente (= 5).
+- `--out` / `--csv` — rutas del PNG y del CSV de salida.
 
 ---
 

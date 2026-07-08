@@ -19,15 +19,22 @@ from PIL import Image, ImageDraw
 
 
 def make_centered_line(angle_deg: float, size: int = 28, scale: int = 4,
-                       width: int = 2) -> np.ndarray:
-    """One centered line at ``angle_deg`` (0 = horizontal). uint8 (size, size)."""
+                       width: int = 2, offset_x: float = 0.0,
+                       offset_y: float = 0.0) -> np.ndarray:
+    """One centered line at ``angle_deg`` (0 = horizontal). uint8 (size, size).
+
+    ``offset_x``/``offset_y`` shift the line from the center in 28px space:
+    positive ``offset_x`` moves it right, negative ``offset_y`` moves it up.
+    """
     S = size * scale
     img = Image.new("L", (S, S), color=0)
     draw = ImageDraw.Draw(img)
 
     angle = math.radians(angle_deg)
     dx, dy = math.cos(angle), math.sin(angle)
-    cx = cy = S / 2  # centered, no jitter
+    # centered, plus a fixed offset (no jitter). y grows downward.
+    cx = S / 2 + offset_x * scale
+    cy = S / 2 + offset_y * scale
     L = S * 1.5  # extend past the canvas so it crosses fully
     draw.line((cx - dx * L, cy - dy * L, cx + dx * L, cy + dy * L),
               fill=255, width=width * scale)
@@ -42,14 +49,20 @@ def main() -> None:
                     help="line angle in degrees (0 = horizontal, 90 = vertical)")
     ap.add_argument("--size", type=int, default=28)
     ap.add_argument("--width", type=int, default=2)
+    ap.add_argument("--offset-x", type=float, default=0.0,
+                    help="horizontal shift in px (positive = right)")
+    ap.add_argument("--offset-y", type=float, default=0.0,
+                    help="vertical shift in px (negative = up)")
     ap.add_argument("--out", default="data/processed/hline/hline.npz")
     args = ap.parse_args()
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    img = make_centered_line(args.angle, size=args.size, width=args.width)
+    img = make_centered_line(args.angle, size=args.size, width=args.width,
+                             offset_x=args.offset_x, offset_y=args.offset_y)
     images = img[None, ...]  # shape (1, size, size)
     np.savez_compressed(args.out, images=images)
-    print(f"wrote {args.out}  images={images.shape} angle={args.angle} deg")
+    print(f"wrote {args.out}  images={images.shape} angle={args.angle} deg "
+          f"offset=({args.offset_x},{args.offset_y})")
 
 
 if __name__ == "__main__":
