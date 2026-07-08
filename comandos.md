@@ -192,5 +192,14 @@ Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
 - Paneles de la webapp: *Fixed image* (la entrada), *Firing (this epoch)* (qué
   neuronas disparan en ese paso) y *Persistence trail* (integrador con memoria:
   las neuronas persistentemente activas se vuelven blancas).
+- Casilla **"pausar antes de cambiar de imagen"** (activada por defecto): en un
+  run secuencial la animación se detiene en el **último frame** de cada imagen
+  (su estado final) antes de pasar a la siguiente entrada; pulsar **Play**
+  reanuda y cruza a la imagen siguiente. En runs de una sola imagen no hay
+  cambios de entrada, así que no pausa.
+- Botón **"Saltar ⏭"**: salta directo al **primer frame de la siguiente
+  entrada** sin esperar la animación. El *persistence trail* se recalcula sobre
+  los frames omitidos, así que el estado al que saltas es fiel (como si hubiera
+  corrido). En el último bloque, salta de vuelta a la primera imagen.
 - El indicador de estado (arriba a la derecha) muestra la hora del archivo
   cargado (`mtime`), útil para confirmar que el Refrescar tomó la versión nueva.
