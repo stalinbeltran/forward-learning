@@ -46,6 +46,7 @@ PAGE = """<!doctype html>
   button:hover { border-color:#3a4256; }
   #refresh { border-color:#2f6feb; color:#9ec1ff; }
   #status { color:#6b7488; font-size:12px; font-variant-numeric:tabular-nums; }
+  #apnote { color:#f0b849; font-size:12px; font-weight:600; }
   main { display:flex; gap:36px; justify-content:center; align-items:flex-start;
          padding:30px 18px; flex-wrap:wrap; }
   .col { text-align:center; }
@@ -58,14 +59,17 @@ PAGE = """<!doctype html>
 <body>
 <header>
   <h1>persistence trail &middot; epoch <span class="val" id="ep">0</span>/<span id="steps">?</span></h1>
-  <div class="ctl"><button id="play">Pause</button><button id="reset">Reset trail</button>
-    <button id="refresh">Refrescar</button></div>
+  <div class="ctl"><button id="play">Pause</button><button id="skip">Saltar &#9197;</button>
+    <button id="reset">Reset trail</button><button id="refresh">Refrescar</button></div>
   <div class="ctl"><label>ms/step <span class="val" id="msv">40</span></label>
     <input type="range" id="ms" min="30" max="1500" step="10" value="40"></div>
   <div class="ctl"><label>trail speed <span class="val" id="rtv">0.30</span></label>
     <input type="range" id="rt" min="0.02" max="1" step="0.02" value="0.30"></div>
   <div class="ctl"><label>&theta; <span class="val" id="thv">0.40</span></label>
     <input type="range" id="th" min="0" max="1" step="0.01" value="0.40"></div>
+  <div class="ctl"><label><input type="checkbox" id="autopause" checked>
+    pausar antes de cambiar de imagen</label></div>
+  <span id="apnote"></span>
   <span id="status"></span>
 </header>
 <main>
@@ -80,7 +84,21 @@ PAGE = """<!doctype html>
 </main>
 <script>
 let META=null, SEQ=null, IMGSEQ=null, IMG=null, step=0, trail=null, timer=null, playing=true, thTouched=false;
+let blockEnd=null, heldAtBoundary=false;  // auto-pause on the last frame of each trained image
 const el = id => document.getElementById(id);
+
+function computeBlockEnds(){
+  // blockEnd[s] = true when step s is the final frame before the input image changes
+  // (or the very last step). Only meaningful when imgseq (per-step image) is present.
+  const n = SEQ.length;
+  blockEnd = new Array(n).fill(false);
+  if(!IMGSEQ) return;
+  for(let s=0; s<n; s++){
+    if(s === n-1){ blockEnd[s]=true; continue; }
+    const a=IMGSEQ[s], b=IMGSEQ[s+1];
+    for(let k=0; k<a.length; k++){ if(a[k]!==b[k]){ blockEnd[s]=true; break; } }
+  }
+}
 
 function drawImg(canvas, arr, side){
   const ctx=canvas.getContext('2d'), im=ctx.createImageData(side,side);
@@ -104,6 +122,26 @@ function updateTrail(act, th, rate){
   ctx.putImageData(im,0,0);
 }
 function resetTrail(){ trail=new Float32Array(META.map_w*META.map_h); }
+function integTrail(s, th, rate){  // advance the trail integrator over step s WITHOUT drawing
+  const act=SEQ[s];
+  for(let i=0;i<act.length;i++){ const on=act[i]>=th;
+    trail[i] += on ? rate*(1-trail[i]) : -rate*trail[i]; }
+}
+function nextInputTarget(){
+  // first step of the NEXT trained image; without imgseq, jump to the final state
+  if(!IMGSEQ || !blockEnd) return SEQ.length-1;
+  let e=step; while(e<SEQ.length-1 && !blockEnd[e]) e++;  // end of the current block
+  return (e+1) % SEQ.length;
+}
+function jumpTo(target){
+  // Jump to `target` but keep the persistence trail faithful by replaying the
+  // integrator over the skipped frames (render() integrates the target itself).
+  const rate=parseFloat(el('rt').value), th=parseFloat(el('th').value);
+  if(target<=step){ resetTrail(); for(let s=1;s<target;s++) integTrail(s,th,rate); }
+  else { for(let s=step+1;s<target;s++) integTrail(s,th,rate); }
+  step=target; heldAtBoundary=false; el('apnote').textContent='';
+  render();
+}
 function render(){
   const th=parseFloat(el('th').value), rate=parseFloat(el('rt').value);
   el('ep').textContent=step;
@@ -112,8 +150,31 @@ function render(){
   updateTrail(SEQ[step], th, rate);
 }
 function advance(){ step=(step+1)%SEQ.length; if(step===0) resetTrail(); render(); }
-function loop(){ if(playing) advance(); timer=setTimeout(loop, parseInt(el('ms').value)); }
-el('play').onclick=()=>{playing=!playing; el('play').textContent=playing?'Pause':'Play';};
+function setPlaying(p){ playing=p; el('play').textContent=p?'Pause':'Play'; }
+function tick(){
+  if(playing){
+    // At a block end with auto-pause on, stop on this final frame until the user
+    // clicks Play; heldAtBoundary lets that click cross into the next image.
+    if(el('autopause').checked && blockEnd && blockEnd[step] && !heldAtBoundary){
+      setPlaying(false);
+      heldAtBoundary=true;
+      el('apnote').textContent='⏸ estado final · Play para la siguiente imagen';
+    } else {
+      advance();
+      heldAtBoundary=false;
+      el('apnote').textContent='';
+    }
+  }
+  timer=setTimeout(tick, parseInt(el('ms').value));
+}
+el('play').onclick=()=>{
+  const next=!playing;
+  // Resuming while parked on a boundary: allow this Play to cross it once.
+  if(next && el('autopause').checked && blockEnd && blockEnd[step]) heldAtBoundary=true;
+  if(next) el('apnote').textContent='';
+  setPlaying(next);
+};
+el('skip').onclick=()=>jumpTo(nextInputTarget());
 el('reset').onclick=()=>{resetTrail(); render();};
 el('refresh').onclick=()=>load(true);
 el('ms').oninput=()=>el('msv').textContent=el('ms').value;
@@ -128,6 +189,7 @@ async function load(manual){
     const img=(await (await fetch('/api/image')).json()).image;
     const imgseq=meta.has_imgseq ? (await (await fetch('/api/imgseq')).json()).imgseq : null;
     META=meta; SEQ=seq; IMG=img; IMGSEQ=imgseq; step=0;
+    computeBlockEnds(); heldAtBoundary=false; el('apnote').textContent='';
     el('steps').textContent=SEQ.length-1;
     if(!thTouched){ el('th').value=META.fire_threshold; el('thv').textContent=META.fire_threshold.toFixed(2); }
     drawImg(el('img'), IMGSEQ?IMGSEQ[0]:img, META.side); resetTrail(); render();
@@ -135,7 +197,7 @@ async function load(manual){
     el('status').textContent=(manual?'refrescado ':'cargado ')+t+' · '+META.mtime;
   }catch(e){ el('status').textContent='error al cargar: '+e; }
 }
-(async()=>{ await load(false); loop(); })();
+(async()=>{ await load(false); tick(); })();
 </script></body></html>"""
 
 

@@ -15,6 +15,14 @@ from __future__ import annotations
 
 import numpy as np
 
+try:
+    from .learning_rules import TruthTableRule
+except ImportError:  # pragma: no cover - script execution fallback
+    import os
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from learning_rules import TruthTableRule
+
 
 def _normalize_rows(M: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     """Return ``M`` with each row scaled to unit L2 norm."""
@@ -34,6 +42,11 @@ class CompetitiveLayer:
         *,
         rule: str = "above_mean",
         reinforce_gain: float = 1.0,
+        # --- learning rule: "gate" (base) o "truth_table" (condensado §regla) ---
+        learning_rule: str = "gate",
+        rule_n: float = 2.0,
+        rule_m: float = 1.0,
+        rule_hr: float = 0.5,
         # --- inhibition mesh (laid out over the grid_h x grid_w output map) ---
         grid_h: int = 50,
         grid_w: int = 50,
@@ -56,6 +69,12 @@ class CompetitiveLayer:
         self.n_out = int(n_out)
         self.rule = rule
         self.reinforce_gain = float(reinforce_gain)
+
+        self.learning_rule = learning_rule
+        self.rule_n = float(rule_n)
+        self.rule_m = float(rule_m)
+        self.rule_hr = float(rule_hr)
+        self._rule = TruthTableRule(n=self.rule_n, m=self.rule_m, hr=self.rule_hr)
 
         self.grid_h = int(grid_h)
         self.grid_w = int(grid_w)
@@ -150,6 +169,23 @@ class CompetitiveLayer:
                 s[idx[fr]] += self.inhib_gain * e
         return s
 
+    def _inhibitors_fired(self, a: np.ndarray) -> np.ndarray:
+        """Bool ``(n_out,)``: True si algún inhibidor que cubre la neurona dispara.
+
+        Un inhibidor "dispara" cuando la fracción de neuronas encendidas en su
+        región supera ``inhib_K`` (mismo umbral que la penalización continua).
+        Marca a TODA su región como inhibida, según pide la tabla de verdad.
+        """
+        fired = a >= self.fire_threshold
+        out = np.zeros(self.n_out, dtype=bool)
+        for idx in self._inhib_regions:
+            nf = int(fired[idx].sum())
+            if nf == 0:
+                continue
+            if (nf / idx.size) - self.inhib_K > 0:
+                out[idx] = True
+        return out
+
     # ---------------------------------------------------------------- forward
     def activation(self, x: np.ndarray) -> np.ndarray:
         """Cosine-similarity activation of every neuron for input ``x``."""
@@ -160,6 +196,10 @@ class CompetitiveLayer:
         xu = self._normalize_vec(x)
         a = self.W @ xu
         self.win_count[int(a.argmax())] += 1
+
+        if self.learning_rule == "truth_table":
+            return self._learn_truth_table(xu, a, lr)
+
         coef = lr * self.reinforce_gain * self._gate(a)
         if self.inhib_on:
             coef = coef - self._inhibition_coeffs(a)
@@ -167,6 +207,26 @@ class CompetitiveLayer:
         if idx.size:
             self.W[idx] += coef[idx][:, None] * xu[None, :]
             self.W[idx] = _normalize_rows(self.W[idx])
+        return a
+
+    def _learn_truth_table(self, xu: np.ndarray, a: np.ndarray, lr: float) -> np.ndarray:
+        """Per-connection update following ``TruthTableRule``.
+
+        The three binary signals are: input active (``|xu| > eps``), neuron
+        fired (``a >= fire_threshold``) and its covering inhibitor firing.
+        Rows are renormalized to keep the unit-norm invariant.
+        """
+        x_active = np.abs(xu) > 1e-8
+        fired = a >= self.fire_threshold
+        if self.inhib_on:
+            inhib_fired = self._inhibitors_fired(a)
+        else:
+            inhib_fired = np.zeros(self.n_out, dtype=bool)
+        dW = self._rule.delta(x_active, fired, inhib_fired, lr)
+        rows = np.nonzero(np.any(dW != 0.0, axis=1))[0]
+        if rows.size:
+            self.W[rows] += dW[rows]
+            self.W[rows] = _normalize_rows(self.W[rows])
         return a
 
     def train_epoch(self, X: np.ndarray, lr: float, rng: np.random.Generator | None = None) -> None:
@@ -181,7 +241,9 @@ class CompetitiveLayer:
 
     # ---------------------------------------------------------- persistence
     _HPARAMS = (
-        "n_in", "n_out", "rule", "reinforce_gain", "grid_h", "grid_w",
+        "n_in", "n_out", "rule", "reinforce_gain",
+        "learning_rule", "rule_n", "rule_m", "rule_hr",
+        "grid_h", "grid_w",
         "inhib_on", "inhib_spacing", "inhib_offset", "inhib_radius",
         "inhib_metric", "fire_threshold", "inhib_K", "inhib_gain",
         "inhib_mode", "seed",
@@ -211,6 +273,10 @@ class CompetitiveLayer:
             n_out=int(get("n_out", 2500)),
             rule=str(get("rule", "above_mean")),
             reinforce_gain=float(get("reinforce_gain", 1.0)),
+            learning_rule=str(get("learning_rule", "gate")),
+            rule_n=float(get("rule_n", 2.0)),
+            rule_m=float(get("rule_m", 1.0)),
+            rule_hr=float(get("rule_hr", 0.5)),
             grid_h=int(get("grid_h", 50)),
             grid_w=int(get("grid_w", 50)),
             inhib_on=bool(get("inhib_on", True)),
@@ -233,6 +299,7 @@ class CompetitiveLayer:
     def __repr__(self) -> str:
         return (
             f"CompetitiveLayer(n_in={self.n_in}, n_out={self.n_out}, "
-            f"rule={self.rule!r}, inhib_on={self.inhib_on}, "
-            f"inhib_gain={self.inhib_gain}, epochs={self.epochs_trained})"
+            f"rule={self.rule!r}, learning_rule={self.learning_rule!r}, "
+            f"inhib_on={self.inhib_on}, inhib_gain={self.inhib_gain}, "
+            f"epochs={self.epochs_trained})"
         )

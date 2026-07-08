@@ -45,6 +45,10 @@ def build_layer(args) -> CompetitiveLayer:
         n_out=args.grid * args.grid,
         rule=args.rule,
         reinforce_gain=args.reinforce_gain,
+        learning_rule=args.learning_rule,
+        rule_n=args.rule_n,
+        rule_m=args.rule_m,
+        rule_hr=args.rule_hr,
         grid_h=args.grid,
         grid_w=args.grid,
         inhib_on=args.inhib,
@@ -72,6 +76,11 @@ def main() -> None:
     ap.add_argument("--grid", type=int, default=50, help="output map is grid x grid")
     ap.add_argument("--rule", default="above_mean", choices=["above_mean", "softmax", "wta"])
     ap.add_argument("--reinforce-gain", type=float, default=1.0)
+    ap.add_argument("--learning-rule", default="gate", choices=["gate", "truth_table"],
+                    help="'gate' (base continua) o 'truth_table' (regla por conexión)")
+    ap.add_argument("--rule-n", type=float, default=2.0, help="truth_table: factor de aprendizaje disparado")
+    ap.add_argument("--rule-m", type=float, default=1.0, help="truth_table: factor de desaprendizaje disparado")
+    ap.add_argument("--rule-hr", type=float, default=0.5, help="truth_table: inhibition rate")
     ap.add_argument("--inhib", action="store_true", help="enable lateral inhibition")
     ap.add_argument("--inhib-spacing", type=int, default=5)
     ap.add_argument("--inhib-radius", type=int, default=8)
