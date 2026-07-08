@@ -78,9 +78,9 @@ def main() -> None:
     ap.add_argument("--reinforce-gain", type=float, default=1.0)
     ap.add_argument("--learning-rule", default="gate", choices=["gate", "truth_table"],
                     help="'gate' (base continua) o 'truth_table' (regla por conexión)")
-    ap.add_argument("--rule-n", type=float, default=2.0, help="truth_table: factor de aprendizaje disparado")
-    ap.add_argument("--rule-m", type=float, default=1.0, help="truth_table: factor de desaprendizaje disparado")
-    ap.add_argument("--rule-hr", type=float, default=0.5, help="truth_table: inhibition rate")
+    ap.add_argument("--rule-n", type=float, default=1.1, help="truth_table: factor de aprendizaje disparado")
+    ap.add_argument("--rule-m", type=float, default=0.3, help="truth_table: factor de desaprendizaje disparado")
+    ap.add_argument("--rule-hr", type=float, default=0.1, help="truth_table: inhibition rate")
     ap.add_argument("--inhib", action="store_true", help="enable lateral inhibition")
     ap.add_argument("--inhib-spacing", type=int, default=5)
     ap.add_argument("--inhib-radius", type=int, default=8)

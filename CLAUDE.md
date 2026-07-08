@@ -17,10 +17,37 @@ Red competitiva Hebbiana de una sola capa ("forward learning") reconstruida en
 - Capa competitiva **784 → 2500** (mapa de salida 50×50).
 - Aprende por reforzamiento Hebbiano competitivo + inhibición lateral. Los pesos
   `W` son `(n_out, n_in)` con filas de norma unitaria; la activación es la
-  similitud coseno en `[-1, 1]`. La regla base solo **refuerza**; toda reducción
-  de peso viene de la malla de inhibidores laterales (única fuerza homeostática).
+  similitud coseno en `[-1, 1]`.
+- Hay **dos reglas de aprendizaje** seleccionables (`learning_rule`):
+  - `"gate"` (por defecto) — regla base continua: solo **refuerza** (gate ≥ 0) y
+    toda reducción de peso viene de la malla de inhibidores laterales.
+  - `"truth_table"` — regla **por conexión** de [hebbian/learning_rules.py](hebbian/learning_rules.py)
+    (`TruthTableRule`), definida por la tabla de verdad de abajo.
 - Núcleo en [hebbian/competitive_net.py](hebbian/competitive_net.py)
   (`CompetitiveLayer`: gate / inhibición / learn / save / load).
+
+### Regla de la tabla de verdad (`hebbian/learning_rules.py`)
+
+Cada peso `W[j, i]` cambia según tres señales **binarias** —entrada activa
+(`|x_i|>0`), neurona `j` disparada (`a_j ≥ fire_threshold`) e inhibidora que la
+cubre disparada— y cuatro parámetros: `lr` (paso base, por época), `n` (factor de
+aprendizaje disparado), `m` (factor de desaprendizaje disparado) y `hr`
+(inhibition rate, penalización **fija**, no escalada por `lr`).
+
+| Entrada | Neurona disparada | Inhibidora disparada | Δpeso |
+|:--:|:--:|:--:|:--:|
+| 0 | 0 | 0 | `0` |
+| 1 | 0 | 0 | `+lr` |
+| 1 | 1 | 0 | `+n·lr` |
+| 0 | 1 | 0 | `−m·lr` |
+| 0 | 0 | 1 | `0` |
+| 0 | 1 | 1 | `0` |
+| 1 | 1 | 1 | `−hr` |
+
+(`1 0 1` no aparece en la tabla → se asume `0`.) Con la inhibidora apagada
+refuerza donde hay entrada y castiga el disparo sin entrada; con la inhibidora
+encendida congela todo salvo el disparo-con-entrada, que recibe `−hr`. Defaults:
+`n=1.1`, `m=0.3`, `hr=0.1` (flags `--learning-rule truth_table --rule-n/--rule-m/--rule-hr`).
 
 ## Módulos (`hebbian/`)
 
