@@ -98,6 +98,47 @@ u otra) y pulsar **Refrescar** en la página. Solo hay que reiniciar el server s
 se cambió `--port`/`--file` o se cerró el proceso; en ese caso liberar el puerto
 antes de relanzar (ver comandos.md §4).
 
+## Comandos: usar y documentar (obligatorio)
+
+[comandos.md](comandos.md) es la **fuente única** de comandos del proyecto. Regla
+para Claude, sin excepción:
+
+1. **Usar siempre los comandos de `comandos.md`.** Para cualquier acción del
+   proyecto (generar datos, entrenar, servir, analizar…), tomar el comando de ahí
+   en vez de inventar uno nuevo o improvisar flags.
+2. **Si falta un comando, documentarlo ANTES de usarlo.** Si la acción que se
+   necesita no está en `comandos.md` (script nuevo, flag nuevo, flujo nuevo),
+   primero **agregar su entrada a `comandos.md`** (comando exacto + parámetros +
+   defaults) y recién entonces ejecutarlo. Nunca correr un comando no documentado
+   y documentarlo "después".
+
+Así garantizamos que **todo comando ejecutado está documentado**. Mantener además
+la referencia sincronizada cuando un script cambie (ver la nota de mantenimiento
+al inicio de `comandos.md`).
+
+## Registro de experimentos (obligatorio)
+
+[experiments.md](experiments.md) es la **bitácora viva** de cada experimento
+(cualquier corrida de `train.py`, `train_sequential.py` o `gen_evolution.py`).
+Como `experiments/` y `data/` están en `.gitignore` (artefactos regenerables),
+esta bitácora es la memoria persistente de qué se corrió y con qué parámetros.
+
+Cada vez que se corra un experimento, **antes de dar por terminada la tarea**:
+
+1. **Agregar una fila al final de la tabla** de `experiments.md` (más reciente
+   abajo) con: número, **fecha y hora** de la corrida, carpeta de salida
+   (`experiments/…`), script, dataset, regla de aprendizaje, los
+   **hiperparámetros que se apartaron del default** (defaults en
+   [comandos.md](comandos.md)) y el **resultado real** observado en la salida.
+2. **Copiar el último experimento a [lastexperiment/](lastexperiment/)** para
+   acceso rápido del usuario: vaciar la carpeta y copiar dentro los artefactos de
+   esa corrida (`model.npz`, `*.csv`, etc.) más un `META.txt` con la fila de la
+   tabla y el comando exacto usado. `lastexperiment/` refleja **siempre** el
+   experimento más reciente. (Está en `.gitignore`: contiene artefactos pesados.)
+
+Anotar los flags **reales** usados, no los supuestos. Si se corrió con la salida
+a la vista, tomar el resultado de ahí (converge / no, ganador, persistencia).
+
 ## Estilo de trabajo (pedido por el usuario)
 
 Construir en capas y verificar cada una ejecutándola antes de continuar.

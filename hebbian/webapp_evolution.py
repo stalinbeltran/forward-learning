@@ -18,14 +18,30 @@ as the network keeps learning, plus a per-neuron leaky "persistence trail".
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
+try:
+    from .competitive_net import CompetitiveLayer
+    from . import metrics as M
+except ImportError:  # pragma: no cover - script fallback
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from competitive_net import CompetitiveLayer
+    import metrics as M
+
 
 DEFAULT_FILE = "experiments/evolution/sequence.npz"
+# "NN actual": el experimento mas reciente vive siempre en lastexperiment/ (ver
+# CLAUDE.md). No se fija: se recarga por mtime, asi que si el modelo cambia en
+# disco la pagina de pruebas usa el nuevo sin reiniciar el servidor.
+DEFAULT_MODEL = "lastexperiment/model.npz"
+DATA_ROOT = "data"
 
 
 PAGE = """<!doctype html>
@@ -41,9 +57,11 @@ PAGE = """<!doctype html>
   .ctl { display:flex; gap:8px; align-items:center; }
   label { color:#9aa4b6; font-size:12px; }
   input[type=range] { width:130px; accent-color:#6ea8fe; }
-  button { background:#161b26; color:#e6e9ef; border:1px solid #2a3242;
+  button, a.btn { background:#161b26; color:#e6e9ef; border:1px solid #2a3242;
            border-radius:6px; padding:5px 10px; font:inherit; }
-  button:hover { border-color:#3a4256; }
+  button:hover, a.btn:hover { border-color:#3a4256; }
+  a.btn { text-decoration:none; display:inline-block; }
+  #testlink { border-color:#2f6feb; color:#9ec1ff; }
   #refresh { border-color:#2f6feb; color:#9ec1ff; }
   #status { color:#6b7488; font-size:12px; font-variant-numeric:tabular-nums; }
   #apnote { color:#f0b849; font-size:12px; font-weight:600; }
@@ -60,7 +78,8 @@ PAGE = """<!doctype html>
 <header>
   <h1>persistence trail &middot; epoch <span class="val" id="ep">0</span>/<span id="steps">?</span></h1>
   <div class="ctl"><button id="play">Pause</button><button id="skip">Saltar &#9197;</button>
-    <button id="reset">Reset trail</button><button id="refresh">Refrescar</button></div>
+    <button id="reset">Reset trail</button><button id="refresh">Refrescar</button>
+    <a class="btn" id="testlink" href="/test">Probar NN &#128300;</a></div>
   <div class="ctl"><label>ms/step <span class="val" id="msv">40</span></label>
     <input type="range" id="ms" min="30" max="1500" step="10" value="40"></div>
   <div class="ctl"><label>trail speed <span class="val" id="rtv">0.30</span></label>
@@ -227,7 +246,346 @@ def _load_file(path):
     return meta, seq, image, imgseq
 
 
-def make_handler(path):
+# --------------------------------------------------------------- test page ---
+# The "Probar NN" page loads the CURRENT model (default lastexperiment/model.npz),
+# lists every dataset under data/, validates each against the network's input
+# dimension, and reports analysis of the model's response over the chosen sets.
+
+_model_cache = {"key": None, "layer": None}
+
+
+def load_current_model(model_path):
+    """(Re)load the current model, refreshing when the file changes on disk.
+
+    Returns ``(layer, info)``; ``layer`` is ``None`` when the file is missing.
+    The model is never fixed: keyed by ``mtime`` so a retrain is picked up on
+    the next request without restarting the server.
+    """
+    if not os.path.exists(model_path):
+        return None, {"error": f"no existe {model_path} (corre un entrenamiento primero)"}
+    mtime = os.path.getmtime(model_path)
+    key = (model_path, mtime)
+    if _model_cache["key"] != key:
+        _model_cache["layer"] = CompetitiveLayer.load(model_path)
+        _model_cache["key"] = key
+    layer = _model_cache["layer"]
+    info = {
+        "path": model_path.replace("\\", "/"),
+        "n_in": layer.n_in,
+        "n_out": layer.n_out,
+        "grid_h": layer.grid_h,
+        "grid_w": layer.grid_w,
+        "side": int(round(layer.n_in ** 0.5)),
+        "fire_threshold": float(layer.fire_threshold),
+        "learning_rule": layer.learning_rule,
+        "epochs_trained": int(layer.epochs_trained),
+        "mtime": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime)),
+    }
+    return layer, info
+
+
+def _dataset_key(d):
+    """Pick the image array inside an ``.npz``: prefer ``images``, else first 2D+."""
+    if "images" in d.files:
+        return "images"
+    for k in d.files:
+        if d[k].ndim >= 2:
+            return k
+    return None
+
+
+def scan_datasets(root=DATA_ROOT, n_in=None):
+    """List every ``.npz`` under ``root`` with its shape and (if ``n_in`` given)
+    whether it is compatible with the network input dimension."""
+    out = []
+    for path in sorted(glob.glob(os.path.join(root, "**", "*.npz"), recursive=True)):
+        try:
+            d = np.load(path, allow_pickle=False)
+        except Exception:
+            continue
+        key = _dataset_key(d)
+        if key is None:
+            continue
+        arr = d[key]
+        if arr.ndim < 2:
+            continue
+        dim = int(np.prod(arr.shape[1:]))
+        item = {
+            "path": path.replace("\\", "/"),
+            "key": key,
+            "n": int(arr.shape[0]),
+            "dim": dim,
+            "shape": [int(s) for s in arr.shape],
+        }
+        if n_in is not None:
+            item["compatible"] = dim == int(n_in)
+        out.append(item)
+    return out
+
+
+def _load_images(path):
+    d = np.load(path, allow_pickle=False)
+    key = _dataset_key(d)
+    arr = d[key]
+    X = arr.reshape(arr.shape[0], -1).astype(np.float32)
+    return X, key
+
+
+def evaluate(layer, paths, threshold):
+    """Run the current model over the selected datasets and bundle the analysis.
+
+    Every dataset is validated against ``layer.n_in`` first; incompatible ones
+    are reported and excluded (never fed to the network).
+    """
+    datasets_info = []
+    incompatible = []
+    Xs, src = [], []
+    for i, path in enumerate(paths):
+        try:
+            X, key = _load_images(path)
+        except Exception as e:
+            datasets_info.append({"path": path, "error": str(e), "compatible": False})
+            continue
+        compatible = X.shape[1] == layer.n_in
+        info = {"path": path.replace("\\", "/"), "key": key,
+                "n": int(X.shape[0]), "dim": int(X.shape[1]), "compatible": compatible}
+        if not compatible:
+            incompatible.append(info["path"])
+            datasets_info.append(info)
+            continue
+        A = M.activations(layer.W, X)
+        w = A.argmax(1)
+        wa = A.max(1)
+        nf = (A >= threshold).sum(1)
+        info.update({
+            "unique_winners": int(len(np.unique(w))),
+            "mean_winner_act": float(wa.mean()),
+            "mean_fired": float(nf.mean()),
+        })
+        datasets_info.append(info)
+        Xs.append(X)
+        src.extend([i] * X.shape[0])
+
+    if not Xs:
+        return {"ok": False, "threshold": threshold, "datasets": datasets_info,
+                "incompatible": incompatible,
+                "error": "ningun dataset compatible seleccionado"}
+
+    Xall = np.concatenate(Xs, 0)
+    A = M.activations(layer.W, Xall)
+    w = A.argmax(1)
+    wa = A.max(1)
+    fired = A >= threshold
+    nf = fired.sum(1)
+    win_count = np.bincount(w, minlength=layer.n_out)
+    fire_fraction = fired.mean(0)
+    combined = {
+        "n_inputs": int(Xall.shape[0]),
+        "unique_winners": int(len(np.unique(w))),
+        "coverage": float(len(np.unique(w)) / layer.n_out),
+        "mean_winner_act": float(wa.mean()),
+        "mean_fired": float(nf.mean()),
+        "dead_selected": int((win_count == 0).sum()),
+        "win_count": win_count.astype(int).tolist(),
+        "fire_fraction": np.round(fire_fraction, 4).tolist(),
+        "per_input": {
+            "winner": w.astype(int).tolist(),
+            "winner_act": np.round(wa, 4).tolist(),
+            "n_fired": nf.astype(int).tolist(),
+            "src": [int(s) for s in src],
+        },
+    }
+    return {"ok": True, "threshold": threshold, "datasets": datasets_info,
+            "incompatible": incompatible, "combined": combined,
+            "map_h": layer.grid_h, "map_w": layer.grid_w}
+
+
+TEST_PAGE = """<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Probar NN actual</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; background:#0b0d12; color:#e6e9ef; font:14px/1.5 system-ui, sans-serif; }
+  header { padding:14px 18px; border-bottom:1px solid #222836;
+           display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:600; }
+  h2 { font-size:13px; color:#9aa4b6; font-weight:600; margin:0 0 10px;
+       text-transform:uppercase; letter-spacing:.06em; }
+  h3 { font-size:12px; color:#9aa4b6; font-weight:600; margin:0 0 8px; }
+  button, a.btn { background:#161b26; color:#e6e9ef; border:1px solid #2a3242;
+           border-radius:6px; padding:5px 10px; font:inherit; cursor:pointer; }
+  button:hover, a.btn:hover { border-color:#3a4256; }
+  a.btn { text-decoration:none; display:inline-block; }
+  button.primary { border-color:#2f6feb; color:#9ec1ff; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .dim { color:#6b7488; font-size:12px; }
+  .val { font-variant-numeric:tabular-nums; color:#6ea8fe; }
+  main { padding:22px 18px; display:flex; flex-direction:column; gap:22px; max-width:1000px; }
+  .panel { border:1px solid #222836; border-radius:8px; padding:18px; background:#0f131b; }
+  .ctl { display:flex; gap:8px; align-items:center; margin:14px 0; }
+  input[type=range] { width:150px; accent-color:#6ea8fe; }
+  .dsrow { display:flex; gap:10px; align-items:center; padding:6px 8px; border-radius:6px; }
+  .dsrow:hover { background:#141a24; }
+  .dsrow label { cursor:pointer; }
+  .badge { font-size:11px; padding:2px 7px; border-radius:10px; font-weight:600; }
+  .ok { background:#12331f; color:#5fd08a; }
+  .bad { background:#3a1520; color:#f08497; }
+  .tiles { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:18px; }
+  .tile { border:1px solid #222836; border-radius:8px; padding:10px 14px; min-width:120px; }
+  .tile .k { font-size:11px; color:#9aa4b6; text-transform:uppercase; letter-spacing:.05em; }
+  .tile .v { font-size:20px; font-weight:600; color:#e6e9ef; font-variant-numeric:tabular-nums; }
+  .maps { display:flex; gap:28px; flex-wrap:wrap; margin-bottom:16px; }
+  canvas { image-rendering:pixelated; background:#000; border:1px solid #222836;
+           border-radius:4px; width:260px; height:260px; }
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th, td { text-align:left; padding:5px 8px; border-bottom:1px solid #1c2431; }
+  th { color:#9aa4b6; font-weight:600; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  details { margin-top:12px; }
+  summary { cursor:pointer; color:#9ec1ff; }
+  .scroll { max-height:320px; overflow:auto; margin-top:8px; }
+</style></head>
+<body>
+<header>
+  <h1>probar NN actual</h1>
+  <a class="btn" href="/">&larr; volver al visor</a>
+  <button id="reload">Recargar NN</button>
+  <span id="minfo" class="dim"></span>
+</header>
+<main>
+  <section class="panel">
+    <h2>1 &middot; Datos de entrada disponibles</h2>
+    <p class="dim">Marca los sets a probar (incluyen los usados en entrenamiento).
+      Los incompatibles con la entrada de la NN actual quedan bloqueados y no se aplican.</p>
+    <div id="datasets"></div>
+    <div class="ctl"><label>&theta; disparo <span class="val" id="thv">0.40</span></label>
+      <input type="range" id="th" min="0" max="1" step="0.01" value="0.40"></div>
+    <button id="run" class="primary">Evaluar</button>
+    <span id="runstatus" class="dim"></span>
+  </section>
+  <section class="panel" id="results" style="display:none">
+    <h2>2 &middot; Análisis de resultados</h2>
+    <div id="tiles" class="tiles"></div>
+    <div class="maps">
+      <div><h3>Neuronas ganadoras (conteo)</h3>
+        <canvas id="winmap" width="50" height="50"></canvas>
+        <div class="dim">brillo = nº de entradas que gana esa neurona</div></div>
+      <div><h3>Fracción de disparo (&theta;)</h3>
+        <canvas id="firemap" width="50" height="50"></canvas>
+        <div class="dim">brillo = fracción de entradas en que dispara</div></div>
+    </div>
+    <div id="perdataset"></div>
+    <details><summary>Ver respuesta por entrada</summary>
+      <div class="scroll" id="perinput"></div></details>
+  </section>
+</main>
+<script>
+let MODEL=null, DATASETS=[];
+const el = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+async function loadModel(){
+  const m = await (await fetch('/api/model')).json();
+  if(m.error){ el('minfo').textContent = m.error; MODEL=null;
+    el('datasets').innerHTML=''; el('run').disabled=true; return; }
+  MODEL=m; el('run').disabled=false;
+  el('minfo').innerHTML = 'NN actual: <b>'+esc(m.path)+'</b> · '+m.n_in+'&rarr;'+m.n_out
+    +' · mapa '+m.grid_h+'&times;'+m.grid_w+' · regla '+esc(m.learning_rule)
+    +' · '+m.epochs_trained+' épocas · guardada '+esc(m.mtime);
+  el('th').value=m.fire_threshold; el('thv').textContent=m.fire_threshold.toFixed(2);
+  await loadDatasets();
+}
+async function loadDatasets(){
+  DATASETS = (await (await fetch('/api/datasets')).json()).datasets;
+  const box = el('datasets'); box.innerHTML='';
+  DATASETS.forEach((d,i)=>{
+    const row=document.createElement('div'); row.className='dsrow';
+    const badge = d.compatible
+      ? '<span class="badge ok">compatible</span>'
+      : '<span class="badge bad">incompatible · dim '+d.dim+' &ne; '+MODEL.n_in+'</span>';
+    row.innerHTML =
+      '<input type="checkbox" id="ds'+i+'" '+(d.compatible?'':'disabled')+
+        (d.compatible?' checked':'')+'>'+
+      '<label for="ds'+i+'"><b>'+esc(d.path)+'</b></label>'+
+      '<span class="dim">'+d.n+' imgs · '+d.shape.slice(1).join('&times;')+'</span>'+badge;
+    box.appendChild(row);
+  });
+}
+function selectedPaths(){
+  return DATASETS.filter((d,i)=> d.compatible && el('ds'+i) && el('ds'+i).checked)
+                 .map(d=>d.path);
+}
+function drawMap(canvas, arr, mw, mh, norm){
+  const ctx=canvas.getContext('2d'), im=ctx.createImageData(mw,mh);
+  let mx=norm; if(mx===undefined){ mx=1e-9; for(const v of arr) if(v>mx) mx=v; }
+  for(let i=0;i<arr.length;i++){ const v=Math.round(Math.max(0,arr[i])/mx*255);
+    im.data[i*4]=v; im.data[i*4+1]=v; im.data[i*4+2]=Math.min(255,v+20); im.data[i*4+3]=255; }
+  ctx.putImageData(im,0,0);
+}
+function tile(k,v){ return '<div class="tile"><div class="k">'+k+'</div><div class="v">'+v+'</div></div>'; }
+function render(res){
+  el('results').style.display='';
+  const c=res.combined;
+  el('tiles').innerHTML =
+    tile('entradas', c.n_inputs) +
+    tile('neuronas ganadoras', c.unique_winners) +
+    tile('cobertura', (c.coverage*100).toFixed(2)+'%') +
+    tile('act. ganador (μ)', c.mean_winner_act.toFixed(3)) +
+    tile('disparan / entrada (μ)', c.mean_fired.toFixed(1)) +
+    tile('muertas (del set)', c.dead_selected);
+  drawMap(el('winmap'), c.win_count, res.map_w, res.map_h);
+  drawMap(el('firemap'), c.fire_fraction, res.map_w, res.map_h, 1.0);
+  // per-dataset summary
+  let t='<table><tr><th>dataset</th><th class="num">imgs</th><th class="num">dim</th>'+
+        '<th>estado</th><th class="num">ganadoras</th><th class="num">act μ</th>'+
+        '<th class="num">disparan μ</th></tr>';
+  res.datasets.forEach(d=>{
+    const st = d.compatible ? '<span class="badge ok">ok</span>'
+                            : '<span class="badge bad">excluido</span>';
+    t+='<tr><td>'+esc(d.path)+'</td><td class="num">'+(d.n??'')+'</td>'+
+       '<td class="num">'+(d.dim??'')+'</td><td>'+st+'</td>'+
+       '<td class="num">'+(d.unique_winners??'—')+'</td>'+
+       '<td class="num">'+(d.mean_winner_act!=null?d.mean_winner_act.toFixed(3):'—')+'</td>'+
+       '<td class="num">'+(d.mean_fired!=null?d.mean_fired.toFixed(1):'—')+'</td></tr>';
+  });
+  t+='</table>'; el('perdataset').innerHTML=t;
+  // per-input
+  const p=c.per_input, names=res.datasets.map(d=>d.path);
+  let r='<table><tr><th class="num">#</th><th>dataset</th><th>ganador (fila,col)</th>'+
+        '<th class="num">act</th><th class="num">disparan</th></tr>';
+  for(let i=0;i<p.winner.length;i++){
+    const w=p.winner[i], row=Math.floor(w/res.map_w), col=w%res.map_w;
+    r+='<tr><td class="num">'+i+'</td><td>'+esc(names[p.src[i]]||'')+'</td>'+
+       '<td>#'+w+' ('+row+','+col+')</td>'+
+       '<td class="num">'+p.winner_act[i].toFixed(3)+'</td>'+
+       '<td class="num">'+p.n_fired[i]+'</td></tr>';
+  }
+  r+='</table>'; el('perinput').innerHTML=r;
+}
+async function run(){
+  const paths=selectedPaths();
+  if(!paths.length){ el('runstatus').textContent='marca al menos un set compatible'; return; }
+  el('run').disabled=true; el('runstatus').textContent='evaluando…';
+  try{
+    const res=await (await fetch('/api/evaluate', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({paths, threshold:parseFloat(el('th').value)})})).json();
+    if(!res.ok){ el('runstatus').textContent='error: '+(res.error||'?'); return; }
+    el('runstatus').textContent='listo · '+res.combined.n_inputs+' entradas'+
+      (res.incompatible.length?(' · '+res.incompatible.length+' excluidas por incompatibles'):'');
+    render(res);
+  }catch(e){ el('runstatus').textContent='error: '+e; }
+  finally{ el('run').disabled=false; }
+}
+el('reload').onclick=loadModel;
+el('run').onclick=run;
+el('th').oninput=()=>el('thv').textContent=parseFloat(el('th').value).toFixed(2);
+loadModel();
+</script></body></html>"""
+
+
+def make_handler(path, model_path=DEFAULT_MODEL):
     # Cache payloads keyed by the file's mtime; rebuild only when the file changes.
     cache = {"mtime": None, "payloads": None}
 
@@ -262,9 +620,24 @@ def make_handler(path):
             self.end_headers()
             self.wfile.write(body)
 
+        def _json(self, obj):
+            self._send(json.dumps(obj).encode(), "application/json")
+
         def do_GET(self):
             if self.path == "/" or self.path.startswith("/index"):
                 self._send(PAGE.encode(), "text/html; charset=utf-8")
+                return
+            if self.path == "/test" or self.path.startswith("/test?"):
+                self._send(TEST_PAGE.encode(), "text/html; charset=utf-8")
+                return
+            if self.path == "/api/model":
+                _, info = load_current_model(model_path)
+                self._json(info)
+                return
+            if self.path == "/api/datasets":
+                layer, _ = load_current_model(model_path)
+                n_in = layer.n_in if layer is not None else None
+                self._json({"datasets": scan_datasets(n_in=n_in)})
                 return
             meta_p, seq_p, image_p, imgseq_p = payloads()
             if self.path == "/api/meta":
@@ -278,12 +651,33 @@ def make_handler(path):
             else:
                 self.send_error(404)
 
+        def do_POST(self):
+            if self.path != "/api/evaluate":
+                self.send_error(404)
+                return
+            layer, info = load_current_model(model_path)
+            if layer is None:
+                self._json({"ok": False, "error": info.get("error", "sin modelo")})
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except Exception as e:
+                self._json({"ok": False, "error": f"body invalido: {e}"})
+                return
+            paths = body.get("paths", [])
+            threshold = float(body.get("threshold", layer.fire_threshold))
+            self._json(evaluate(layer, paths, threshold))
+
     return Handler
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Persistence-trail viewer (pure server)")
     ap.add_argument("--file", default=DEFAULT_FILE, help="sequence .npz to serve")
+    ap.add_argument("--model", default=DEFAULT_MODEL,
+                    help="modelo de la 'NN actual' para la pagina /test "
+                         "(por defecto el ultimo experimento en lastexperiment/)")
     ap.add_argument("--port", type=int, default=8000)
     args = ap.parse_args()
 
@@ -291,8 +685,10 @@ def main() -> None:
         print(f"warning: {args.file} no existe todavia; "
               f"corre gen_evolution.py y pulsa Refrescar en la pagina")
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(args.file))
+    server = ThreadingHTTPServer(("127.0.0.1", args.port),
+                                 make_handler(args.file, args.model))
     print(f"serving {args.file} at http://127.0.0.1:{args.port}  (Ctrl+C to stop)")
+    print(f"pagina de pruebas: http://127.0.0.1:{args.port}/test  (NN actual: {args.model})")
     print("re-run gen_evolution.py anytime, then click Refrescar (no restart needed)")
     try:
         server.serve_forever()

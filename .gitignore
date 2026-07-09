@@ -1,6 +1,7 @@
 # Project outputs (condensado.md §6): heavy artifacts, not versioned
 experiments/
 data/
+lastexperiment/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

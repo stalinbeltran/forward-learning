@@ -180,9 +180,16 @@ lo omiten y el panel queda fijo, como antes).
 .venv\Scripts\python.exe hebbian\webapp_evolution.py --port 8000
 ```
 
-Luego abre: http://127.0.0.1:8000
+Luego abre: http://127.0.0.1:8000 (visor) o http://127.0.0.1:8000/test (pruebas).
 
 - `--file` — secuencia a servir (por defecto `experiments/evolution/sequence.npz`).
+- `--model` — modelo de la **NN actual** para `/test` (por defecto
+  `lastexperiment/model.npz`).
+- `--port` — puerto HTTP (por defecto `8000`).
+
+En el flujo normal **no hace falta reiniciar** este servidor: para ver un nuevo
+entrenamiento pulsa **Refrescar**, y para probar un modelo reentrenado pulsa
+**Recargar NN** en `/test`. Solo se reinicia en los casos del §4b.
 
 ---
 
@@ -191,14 +198,30 @@ Luego abre: http://127.0.0.1:8000
 Con el servidor del paso 3 corriendo, vuelve a ejecutar el **paso 2** (misma
 imagen u otra) y pulsa **Refrescar** en la página. El servidor detecta el cambio
 de archivo y muestra el nuevo entrenamiento. **No hace falta reiniciar nada.**
+(De igual forma, para probar un modelo reentrenado en `/test`, pulsa **Recargar
+NN**: relee `lastexperiment/model.npz` del disco sin reiniciar.)
 
-Solo necesitas reiniciar el servidor si cambiaste `--port`/`--file` o cerraste
-el proceso. En ese caso, libera el puerto y relánzalo:
+## 4b. Reiniciar el servidor (cuándo y cómo)
+
+Solo necesitas reiniciar si cambiaste un **flag de arranque** (`--port`,
+`--file` o `--model`) o cerraste el proceso. En ese caso libera el puerto y
+relánzalo (ajusta los flags que quieras):
 
 ```powershell
 Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
 .venv\Scripts\python.exe hebbian\webapp_evolution.py --port 8000
 ```
+
+> **Nota — PowerShell vs cmd.exe:** todos los comandos de este archivo asumen
+> **PowerShell** (el prompt suele terminar en `PS C:\...>`). Si tu prompt es
+> `C:\...>` estás en cmd.exe y `Get-NetTCPConnection` dará
+> *"no se reconoce como un comando"*: abre PowerShell escribiendo `powershell` y
+> Enter. El comando `.venv\Scripts\python.exe ...` sí funciona en ambos. Para
+> liberar el puerto **desde cmd.exe** el equivalente es:
+>
+> ```
+> for /f "tokens=5" %a in ('netstat -ano ^| findstr :8000 ^| findstr LISTENING') do taskkill /PID %a /F
+> ```
 
 ---
 
@@ -332,12 +355,24 @@ Además de todos los flags del modelo (sección A), tiene:
 
 ### I. Servidores web
 
-`webapp_evolution.py` (visor de persistence trail):
+`webapp_evolution.py` (visor de persistence trail + página de pruebas):
 
 | Flag | Default | Descripción |
 |---|---|---|
 | `--file` | `experiments/evolution/sequence.npz` | secuencia a servir. |
+| `--model` | `lastexperiment/model.npz` | modelo de la **NN actual** para la página `/test` (el último experimento; se recarga por `mtime`, no queda fijo). |
 | `--port` | `8000` | puerto HTTP. |
+
+**Página de pruebas (`/test`):** el visor tiene un botón **"Probar NN 🔬"** en la
+cabecera que lleva a `http://127.0.0.1:8000/test`. Ahí se elige entre todos los
+sets de `data/` (incluidos los de entrenamiento) cuáles probar sobre la NN
+actual; cada set se **valida contra la dimensión de entrada** de la red (los
+incompatibles quedan bloqueados y no se aplican) y se muestran métricas
+agregadas (cobertura, neuronas ganadoras, activación del ganador, disparos por
+entrada, neuronas muertas), un mapa 50×50 de ganadoras, un mapa de fracción de
+disparo y el detalle por dataset y por entrada. El botón **"Recargar NN"** vuelve
+a leer el modelo del disco, así que tras reentrenar (nuevo `lastexperiment/`)
+basta pulsarlo — sin reiniciar el servidor.
 
 `webapp.py` (visor Original vs Negativo):
 
