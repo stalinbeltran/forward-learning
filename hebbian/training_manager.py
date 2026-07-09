@@ -439,7 +439,7 @@ class TrainingManager:
         self._set(state="running", nn=nn_path.replace("\\", "/"),
                   dataset=dataset.replace("\\", "/"), epoch=0,
                   total=int(tp["epochs"]), log=[], converged_at=None,
-                  error=None, started=time.strftime("%H:%M:%S"))
+                  error=None, training_on=None, started=time.strftime("%H:%M:%S"))
         self._thread = threading.Thread(
             target=self._run, args=(nn_path, dataset, X, key, tp), daemon=True)
         self._thread.start()
@@ -480,6 +480,17 @@ class TrainingManager:
             fixed = X[img_idx]
             thr = layer.fire_threshold
             rng = np.random.default_rng(layer.seed + layer.epochs_trained)
+
+            # Announce what this run trains on (shown in the /train "4 · Correr"
+            # log and as a status line): all inputs vs a single image.
+            n_inputs = len(X)
+            if probe_label == -1:
+                train_desc = (f"entrenando con TODAS las entradas del set "
+                              f"({n_inputs} imgs) · sonda del trail: imagen {img_idx}")
+            else:
+                train_desc = f"entrenando con la imagen {img_idx} (de {n_inputs})"
+            self._set(training_on=train_desc, n_inputs=n_inputs)
+            self._log(train_desc)
 
             # Convergence scope: when training on ALL inputs, persistence must be
             # measured over the WHOLE set (mean per-input persistence) — otherwise

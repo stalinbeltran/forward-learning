@@ -1029,6 +1029,7 @@ TRAIN_PAGE = """<!doctype html>
       <button id="stop" class="stop" disabled>Detener</button>
       <span id="runmsg"></span>
     </div>
+    <div id="trainon" class="dim" style="margin:2px 0 8px"></div>
     <div class="stat" id="tiles"></div>
     <div class="row"><progress id="prog" value="0" max="1"></progress>
       <span id="progtxt" class="dim"></span></div>
@@ -1157,6 +1158,7 @@ function renderStatus(s){
     ['cobertura',s.coverage!=null?s.coverage:'—']];
   el('tiles').innerHTML=tiles.map(([k,v])=>
     '<div class="tile"><div class="k">'+k+'</div><div class="v">'+esc(v)+'</div></div>').join('');
+  el('trainon').textContent = s.training_on ? ('▶ '+s.training_on) : '';
   const tot=s.total||1; el('prog').max=tot; el('prog').value=s.epoch||0;
   el('progtxt').textContent = s.converged_at ? ('convergió en '+s.converged_at) : '';
   el('log').textContent=(s.log||[]).join('\\n'); el('log').scrollTop=el('log').scrollHeight;

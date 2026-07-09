@@ -295,7 +295,9 @@ Flujo de la página (cuatro pasos):
 4. **Correr** — **Iniciar entrenamiento** (deshabilitado hasta elegir NN + set
    compatible) y **Detener** (para la corrida en curso; escribe la secuencia
    parcial y guarda la NN igual). La página muestra época/total, persistencia,
-   nº que disparan, ganadoras, cobertura y un log en vivo.
+   nº que disparan, ganadoras, cobertura y un log en vivo. Al arrancar indica
+   (línea `▶` y primera línea del log) **con qué está entrenando**: *TODAS las
+   entradas del set (N imgs)* o *la imagen k (de N)*.
 
 Cada corrida (completa o detenida): guarda la NN en su carpeta del store
 (continúa entrenando en el sitio, acumulando `epochs_trained`), escribe
