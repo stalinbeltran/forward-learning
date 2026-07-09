@@ -127,6 +127,20 @@ class CompetitiveLayer:
             regions.append(np.nonzero(mask)[0])
         self._inhib_regions = regions
 
+    def rebuild_derived(self) -> None:
+        """Rebuild everything derived from the (possibly edited) hyperparameters.
+
+        Used when an existing NN's hyperparameters are changed in place (see
+        ``training_manager.update_nn``): re-creates the truth-table rule object
+        from ``rule_n/m/hr`` and recomputes the inhibitor regions from the
+        current spacing/radius/metric. Does NOT touch ``W`` — structural fields
+        (``n_in``, ``n_out``, ``grid_*``) are never edited.
+        """
+        self._rule = TruthTableRule(n=self.rule_n, m=self.rule_m, hr=self.rule_hr)
+        if self.inhib_offset is None:
+            self.inhib_offset = self.inhib_spacing // 2
+        self._build_inhib_regions()
+
     # -------------------------------------------------------------- internals
     @staticmethod
     def _normalize_vec(x: np.ndarray, eps: float = 1e-8) -> np.ndarray:

@@ -276,10 +276,16 @@ Flujo de la página (cuatro pasos):
    muestras, forma y dimensión. Los **incompatibles** con la entrada de la NN
    elegida (`dim ≠ n_in`) quedan **bloqueados** (no se pueden seleccionar).
 3. **Parámetros del entrenamiento** — `lr`, `epochs`, `min_persistence`
-   (vacío = sin early-stop), `persist_patience`, `image_index` (cuál imagen
-   maneja el *persistence trail*) y `key`. Vienen precargados con los **últimos
-   valores usados por esa NN** (`train_params.json`) y se pueden cambiar por
-   corrida; al terminar se guardan como los nuevos defaults de esa NN.
+   (vacío = sin early-stop), `persist_patience`, `image_index` y `key`. Vienen
+   precargados con los **últimos valores usados por esa NN**
+   (`train_params.json`); si la NN es nueva, con los defaults del app
+   (`app_config.json` → `train_defaults`: `lr=0.001`, `min_persistence=0.7`,
+   `epochs=800`, `persist_patience=9`). Se cambian por corrida y al terminar se
+   guardan como los nuevos defaults de esa NN.
+   - **`image_index` vacío = entrenar con TODAS las entradas del set** (barajadas
+     por época). Un índice `0..N-1` entrena **solo** esa imagen. En ambos casos
+     el *persistence trail* sigue una imagen fija (la indicada, o la 0 cuando se
+     entrena con todas).
 4. **Correr** — **Iniciar entrenamiento** (deshabilitado hasta elegir NN + set
    compatible) y **Detener** (para la corrida en curso; escribe la secuencia
    parcial y guarda la NN igual). La página muestra época/total, persistencia,
@@ -295,6 +301,43 @@ Cada corrida (completa o detenida): guarda la NN en su carpeta del store
 > conviene **anotarlo en [experiments.md](experiments.md)** si el resultado
 > importa (ver CLAUDE.md → "Registro de experimentos"). El store y
 > `experiments/`/`data/` están en `.gitignore`.
+
+---
+
+## 5b. Editar los hiperparámetros de una NN (`/edit`)
+
+**http://127.0.0.1:8000/edit** (o **"Editar ✏️"** en el visor). Elegí una NN del
+store y ajustá su comportamiento **sin perder los pesos aprendidos**. Dos grupos:
+
+- **Estructura (no editable):** `n_in`, `grid` (→ `n_out`) y `seed` quedan
+  **bloqueados** — definen la forma de los pesos y cambiarlos invalidaría la red
+  ya entrenada. Para otra estructura, creá o copiá una NN en `/train`.
+- **Editables:** regla (`rule`, `learning_rule`, `rule_n/m/hr`, `reinforce_gain`),
+  inhibición (`inhib_on/spacing/radius/metric/K/gain/mode`) y `fire_threshold`.
+  Al **Guardar cambios** se aplican en el sitio (se reconstruyen la regla de tabla
+  de verdad y las regiones de inhibición) y se re-guarda `model.npz`.
+
+Los campos con varias opciones (`rule`, `learning_rule`, `inhib_metric`,
+`inhib_mode`) muestran sus valores válidos al lado (desplegable + lista).
+
+---
+
+## 5c. Configuración de defaults del app (`app_config.json`)
+
+Archivo en la **raíz del repo** (versionado) que fija los defaults de la app; se
+relee **sin reiniciar** el servidor (pulsá *Recargar listas* en `/train`/`/edit`,
+o recargá la página del visor). Secciones:
+
+- `train_defaults` — parámetros de entrenamiento por defecto para NNs nuevas
+  (`lr`, `min_persistence`, `epochs`, `persist_patience`, `image_index`, `key`).
+- `model_defaults` — hiperparámetros por defecto al **crear** una NN nueva.
+- `viewer_defaults` — controles del visor (`ms_per_step`, `trail_speed`,
+  `fire_threshold`, `autopause`).
+- `_options` — **referencia**: lista los valores válidos de cada parámetro
+  enumerado (no es un valor; la UI la muestra junto a cada campo).
+
+Defaults de entrenamiento actuales: `lr=0.001`, `min_persistence=0.7`,
+`epochs=800`, `persist_patience=9`, `image_index=null` (todas las entradas).
 
 ---
 
@@ -440,12 +483,13 @@ Además de todos los flags del modelo (sección A), tiene:
 | `--store-dir` | `experiments/nns` | **store de NNs entrenables** desde la página `/train` (cada NN es una subcarpeta con `model.npz` + `train_params.json`). |
 | `--port` | `8000` | puerto HTTP. |
 
-El mismo servidor sirve **cuatro páginas** (mismo puerto), enlazadas entre sí
+El mismo servidor sirve **cinco páginas** (mismo puerto), enlazadas entre sí
 desde la cabecera del visor:
 
 - `/` — **visor de entrenamiento** (persistence trail; §3 arriba).
 - `/train` — **entrenar una NN desde el navegador** (crear/copiar NN, elegir set,
   parámetros, iniciar/detener; §5 abajo).
+- `/edit` — **editar los hiperparámetros de una NN** del store (§5b abajo).
 - `/test` — **análisis agregado** de aplicar sets a la NN actual.
 - `/apply` — **replay visual** de aplicar un set a la NN entrenada, entrada por
   entrada.
@@ -491,11 +535,12 @@ servidor.
 - Paneles de la webapp: *Fixed image* (la entrada), *Firing (this epoch)* (qué
   neuronas disparan en ese paso) y *Persistence trail* (integrador con memoria:
   las neuronas persistentemente activas se vuelven blancas).
-- Casilla **"pausar antes de cambiar de imagen"** (activada por defecto): en un
-  run secuencial la animación se detiene en el **último frame** de cada imagen
-  (su estado final) antes de pasar a la siguiente entrada; pulsar **Play**
-  reanuda y cruza a la imagen siguiente. En runs de una sola imagen no hay
-  cambios de entrada, así que no pausa.
+- Casilla **"pausar en el estado final (y antes de cambiar de imagen)"**
+  (activada por defecto): la animación se detiene en la **época final** (el último
+  frame de la secuencia) y ahí se queda; **quitar la casilla** la hace correr en
+  bucle. En un run secuencial además pausa en el **último frame de cada imagen**
+  (su estado final) antes de pasar a la siguiente entrada; pulsar **Play** reanuda
+  y cruza. El default (`autopause`) se fija en `app_config.json` → `viewer_defaults`.
 - Botón **"Saltar ⏭"**: salta directo al **primer frame de la siguiente
   entrada** sin esperar la animación. El *persistence trail* se recalcula sobre
   los frames omitidos, así que el estado al que saltas es fiel (como si hubiera

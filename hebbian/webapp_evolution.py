@@ -70,6 +70,7 @@ PAGE = """<!doctype html>
   a.btn { text-decoration:none; display:inline-block; }
   select { max-width:420px; }
   #trainlink { border-color:#8a5cf6; color:#c4b5fd; }
+  #editlink { border-color:#b08928; color:#e6c072; }
   #testlink { border-color:#2f6feb; color:#9ec1ff; }
   #applylink { border-color:#2f8f5f; color:#8fe0b0; }
   #refresh { border-color:#2f6feb; color:#9ec1ff; }
@@ -90,6 +91,7 @@ PAGE = """<!doctype html>
   <div class="ctl"><button id="play">Pause</button><button id="skip">Saltar &#9197;</button>
     <button id="reset">Reset trail</button><button id="refresh">Refrescar</button>
     <a class="btn" id="trainlink" href="/train">Entrenar &#127981;</a>
+    <a class="btn" id="editlink" href="/edit">Editar &#9998;</a>
     <a class="btn" id="testlink" href="/test">Probar NN &#128300;</a>
     <a class="btn" id="applylink" href="/apply">Aplicar set &#127919;</a></div>
   <div class="ctl"><label>NN</label><select id="nn" title="red entrenada; mas reciente arriba"></select></div>
@@ -101,7 +103,7 @@ PAGE = """<!doctype html>
   <div class="ctl"><label>&theta; <span class="val" id="thv">0.40</span></label>
     <input type="range" id="th" min="0" max="1" step="0.01" value="0.40"></div>
   <div class="ctl"><label><input type="checkbox" id="autopause" checked>
-    pausar antes de cambiar de imagen</label></div>
+    pausar en el estado final (y antes de cambiar de imagen)</label></div>
   <span id="apnote"></span>
   <span id="status"></span>
 </header>
@@ -122,13 +124,14 @@ let NNS=[];  // trained NNs, most recent first; each holds its sequences (idem)
 const el = id => document.getElementById(id);
 
 function computeBlockEnds(){
-  // blockEnd[s] = true when step s is the final frame before the input image changes
-  // (or the very last step). Only meaningful when imgseq (per-step image) is present.
+  // blockEnd[s] = true when step s is a pause point for auto-pause: the final
+  // epoch (always), and — for sequential runs with a per-step image (imgseq) —
+  // the last frame before the input image changes.
   const n = SEQ.length;
   blockEnd = new Array(n).fill(false);
+  blockEnd[n-1] = true;  // final epoch: pause here until the checkbox is cleared
   if(!IMGSEQ) return;
-  for(let s=0; s<n; s++){
-    if(s === n-1){ blockEnd[s]=true; continue; }
+  for(let s=0; s<n-1; s++){
     const a=IMGSEQ[s], b=IMGSEQ[s+1];
     for(let k=0; k<a.length; k++){ if(a[k]!==b[k]){ blockEnd[s]=true; break; } }
   }
@@ -192,7 +195,9 @@ function tick(){
     if(el('autopause').checked && blockEnd && blockEnd[step] && !heldAtBoundary){
       setPlaying(false);
       heldAtBoundary=true;
-      el('apnote').textContent='⏸ estado final · Play para la siguiente imagen';
+      el('apnote').textContent = (step===SEQ.length-1)
+        ? '⏸ época final · Play para reiniciar, o quitá la casilla para seguir en bucle'
+        : '⏸ estado final · Play para la siguiente imagen';
     } else {
       advance();
       heldAtBoundary=false;
@@ -270,7 +275,18 @@ async function load(manual){
     el('status').textContent=(manual?'refrescado ':'cargado ')+t+' · '+META.mtime;
   }catch(e){ el('status').textContent='error al cargar: '+e; }
 }
-(async()=>{ await loadNns(); await load(false); tick(); })();
+async function applyViewerConfig(){
+  // seed the sliders/checkbox from app_config.json viewer_defaults (θ is left to
+  // the model's fire_threshold, applied in load()).
+  try{
+    const v = (await (await fetch('/api/config')).json()).viewer_defaults || {};
+    if(v.ms_per_step){ el('ms').value=v.ms_per_step; el('msv').textContent=v.ms_per_step; }
+    if(v.trail_speed!=null){ el('rt').value=v.trail_speed;
+      el('rtv').textContent=(+v.trail_speed).toFixed(2); }
+    if(v.autopause!=null){ el('autopause').checked=!!v.autopause; }
+  }catch(e){}
+}
+(async()=>{ await applyViewerConfig(); await loadNns(); await load(false); tick(); })();
 </script></body></html>"""
 
 
@@ -942,6 +958,7 @@ TRAIN_PAGE = """<!doctype html>
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px 16px; }
   .fld { display:flex; flex-direction:column; gap:3px; }
   .fld input, .fld select { width:100%; box-sizing:border-box; }
+  .opts { font-size:11px; color:#5b6478; }
   select.wide { min-width:320px; }
   .badge { font-size:11px; padding:2px 7px; border-radius:10px; font-weight:600; }
   .ok { background:#12331f; color:#5fd08a; }
@@ -962,6 +979,7 @@ TRAIN_PAGE = """<!doctype html>
 <header>
   <h1>entrenar NN</h1>
   <a class="btn" href="/">&larr; visor</a>
+  <a class="btn" href="/edit">/edit</a>
   <a class="btn" href="/test">/test</a>
   <a class="btn" href="/apply">/apply</a>
   <button id="reload">Recargar listas</button>
@@ -1049,8 +1067,10 @@ function fieldInput(key, val){
   return '<input id="mp_'+key+'" value="'+esc(v)+'">';
 }
 function renderModelForm(defaults){
-  el('modelparams').innerHTML = MODEL_FIELDS.map(k=>
-    '<div class="fld"><label>'+k+'</label>'+fieldInput(k, defaults[k])+'</div>').join('');
+  el('modelparams').innerHTML = MODEL_FIELDS.map(k=>{
+    const opts = ENUMS[k] ? '<span class="opts">opciones: '+ENUMS[k].join(', ')+'</span>' : '';
+    return '<div class="fld"><label>'+k+'</label>'+fieldInput(k, defaults[k])+opts+'</div>';
+  }).join('');
 }
 function readModelForm(){
   const p={};
@@ -1062,20 +1082,26 @@ function readModelForm(){
   });
   return p;
 }
+const TRAIN_HINTS = {
+  min_persistence:'vacío = sin early-stop',
+  image_index:'vacío = entrenar con TODAS las entradas del set; o un índice 0..N-1',
+};
 function renderTrainForm(tp){
   el('trainparams').innerHTML = TRAIN_FIELDS.map(k=>{
     const v=(tp[k]===null||tp[k]===undefined)?'':tp[k];
-    const ph = k==='min_persistence' ? ' placeholder="(vacío = sin early-stop)"' : '';
-    return '<div class="fld"><label>'+k+'</label><input id="tp_'+k+'" value="'+esc(v)+'"'+ph+'></div>';
+    const hint = TRAIN_HINTS[k] ? '<span class="opts">'+TRAIN_HINTS[k]+'</span>' : '';
+    const ph = TRAIN_HINTS[k] ? ' placeholder="('+TRAIN_HINTS[k]+')"' : '';
+    return '<div class="fld"><label>'+k+'</label><input id="tp_'+k+'" value="'+esc(v)+'"'+ph+'>'+hint+'</div>';
   }).join('');
 }
 function readTrainForm(){
   const p={};
   TRAIN_FIELDS.forEach(k=>{ p[k]=el('tp_'+k).value; });
-  // normalize types
+  // normalize types; empty image_index -> null (train on all inputs)
   p.lr=parseFloat(p.lr); p.epochs=parseInt(p.epochs);
-  p.persist_patience=parseInt(p.persist_patience); p.image_index=parseInt(p.image_index);
-  p.min_persistence = (p.min_persistence==='') ? null : parseFloat(p.min_persistence);
+  p.persist_patience=parseInt(p.persist_patience);
+  p.image_index = (p.image_index.trim()==='') ? null : parseInt(p.image_index);
+  p.min_persistence = (p.min_persistence.trim()==='') ? null : parseFloat(p.min_persistence);
   return p;
 }
 
@@ -1204,6 +1230,138 @@ reloadAll();
 </script></body></html>"""
 
 
+EDIT_PAGE = """<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Editar NN</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; background:#0b0d12; color:#e6e9ef; font:14px/1.5 system-ui, sans-serif; }
+  header { padding:14px 18px; border-bottom:1px solid #222836;
+           display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:600; }
+  h2 { font-size:13px; color:#9aa4b6; font-weight:600; margin:0 0 12px;
+       text-transform:uppercase; letter-spacing:.06em; }
+  button, a.btn, select, input { background:#161b26; color:#e6e9ef;
+       border:1px solid #2a3242; border-radius:6px; padding:5px 9px; font:inherit; }
+  button, a.btn, select { cursor:pointer; }
+  button:hover, a.btn:hover, select:hover { border-color:#3a4256; }
+  a.btn { text-decoration:none; display:inline-block; }
+  button.primary { border-color:#8a5cf6; color:#c4b5fd; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  input:disabled, select:disabled { opacity:.55; cursor:not-allowed; background:#10131a; }
+  .dim { color:#6b7488; font-size:12px; }
+  main { padding:22px 18px; display:flex; flex-direction:column; gap:20px; max-width:1000px; }
+  .panel { border:1px solid #222836; border-radius:8px; padding:18px; background:#0f131b; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:8px 0; }
+  label { color:#9aa4b6; font-size:12px; }
+  select.wide { min-width:320px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px 16px; }
+  .fld { display:flex; flex-direction:column; gap:3px; }
+  .fld input, .fld select { width:100%; box-sizing:border-box; }
+  .fld .opts { font-size:11px; color:#5b6478; }
+  .lock { font-size:10px; color:#c58a3a; margin-left:4px; }
+</style></head>
+<body>
+<header>
+  <h1>editar NN</h1>
+  <a class="btn" href="/">&larr; visor</a>
+  <a class="btn" href="/train">/train</a>
+  <a class="btn" href="/test">/test</a>
+  <button id="reload">Recargar</button>
+  <span id="msg" class="dim"></span>
+</header>
+<main>
+  <section class="panel">
+    <h2>1 &middot; Elegí la NN</h2>
+    <div class="row"><label>NN del store</label>
+      <select id="nn" class="wide"></select></div>
+    <div id="nninfo" class="dim"></div>
+  </section>
+  <section class="panel">
+    <h2>Estructura (no editable)</h2>
+    <p class="dim">Definen la forma de los pesos; cambiarlos invalidaría la red ya
+      entrenada. Para otra estructura, creá o copiá una NN en <a href="/train">/train</a>.</p>
+    <div class="grid" id="locked"></div>
+  </section>
+  <section class="panel">
+    <h2>2 &middot; Parámetros editables</h2>
+    <p class="dim">Ajustan el comportamiento (regla, inhibición, umbral) sin tocar
+      los pesos aprendidos. Se aplican al guardar.</p>
+    <div class="grid" id="editable"></div>
+    <div class="row"><button id="save" class="primary">Guardar cambios</button>
+      <span id="savemsg" class="dim"></span></div>
+  </section>
+</main>
+<script>
+let MODELS=null;
+const el = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const ALL_FIELDS = ['n_in','grid','rule','reinforce_gain','learning_rule',
+  'rule_n','rule_m','rule_hr','inhib_on','inhib_spacing','inhib_radius',
+  'inhib_metric','fire_threshold','inhib_K','inhib_gain','inhib_mode','seed'];
+
+function valueFor(nn,k){ return k==='grid' ? nn.grid_h : nn[k]; }
+function fieldHtml(k, val, locked, opts){
+  const id='ef_'+k, dis=locked?' disabled':'';
+  let ctl;
+  if(k==='inhib_on') ctl='<input type="checkbox" id="'+id+'"'+(val?' checked':'')+dis+'>';
+  else if(opts && opts[k] && Array.isArray(opts[k]))
+    ctl='<select id="'+id+'"'+dis+'>'+opts[k].map(o=>
+      '<option'+(o===val?' selected':'')+'>'+o+'</option>').join('')+'</select>';
+  else ctl='<input id="'+id+'" value="'+esc(val===null||val===undefined?'':val)+'"'+dis+'>';
+  const optsHint = (opts && opts[k] && Array.isArray(opts[k]))
+    ? '<span class="opts">opciones: '+opts[k].join(', ')+'</span>' : '';
+  const lockTag = locked ? '<span class="lock">🔒 fijo</span>' : '';
+  return '<div class="fld"><label>'+k+lockTag+'</label>'+ctl+optsHint+'</div>';
+}
+function selectedNn(){ return MODELS.store.find(n=>n.id===el('nn').value); }
+function renderForm(){
+  const nn=selectedNn();
+  if(!nn){ el('nninfo').textContent='no hay NNs en el store; creá una en /train.';
+    el('locked').innerHTML=''; el('editable').innerHTML=''; el('save').disabled=true; return; }
+  el('save').disabled=false;
+  el('nninfo').innerHTML='entrada <b>'+nn.n_in+'</b> · mapa '+nn.grid_h+'×'+nn.grid_w
+    +' ('+nn.n_out+') · <b>'+nn.epochs_trained+'</b> épocas entrenadas · guardada '+esc(nn.mtime);
+  const locked=new Set(MODELS.locked||['n_in','grid','seed']);
+  el('locked').innerHTML = ALL_FIELDS.filter(k=>locked.has(k))
+    .map(k=>fieldHtml(k, valueFor(nn,k), true, MODELS.options)).join('');
+  el('editable').innerHTML = ALL_FIELDS.filter(k=>!locked.has(k))
+    .map(k=>fieldHtml(k, valueFor(nn,k), false, MODELS.options)).join('');
+}
+function readEditable(){
+  const p={}, locked=new Set(MODELS.locked||['n_in','grid','seed']);
+  ALL_FIELDS.filter(k=>!locked.has(k)).forEach(k=>{
+    const e=el('ef_'+k); if(!e) return;
+    p[k] = (k==='inhib_on') ? e.checked : e.value;
+  });
+  return p;
+}
+async function load(){
+  MODELS = await (await fetch('/api/models')).json();
+  const prev=el('nn').value, sel=el('nn'); sel.innerHTML='';
+  MODELS.store.forEach(n=>{ const o=document.createElement('option');
+    o.value=n.id; o.textContent=n.name+'  ('+n.n_in+'→'+n.n_out+', '+n.epochs_trained+'ép)';
+    sel.appendChild(o); });
+  if(MODELS.store.length) sel.value=MODELS.store.find(n=>n.id===prev)?prev:MODELS.store[0].id;
+  renderForm();
+}
+el('nn').onchange=renderForm;
+el('reload').onclick=load;
+el('save').onclick=async()=>{
+  const nn=selectedNn(); if(!nn) return;
+  el('savemsg').textContent='guardando…';
+  const r=await (await fetch('/api/nn/update',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({nn:nn.id, model_params:readEditable()})})).json();
+  if(!r.ok){ el('savemsg').textContent='error: '+r.error; return; }
+  el('savemsg').textContent='guardado ✓';
+  await load();
+};
+load();
+</script></body></html>"""
+
+
 def make_handler(default_file, model_path=DEFAULT_MODEL, runs_dir=DEFAULT_RUNS_DIR,
                  store_dir=TM.STORE_DIR):
     # Payloads are cached per file, keyed by mtime; rebuilt only when a file
@@ -1283,13 +1441,23 @@ def make_handler(default_file, model_path=DEFAULT_MODEL, runs_dir=DEFAULT_RUNS_D
             if self.path == "/train" or self.path.startswith("/train?"):
                 self._send(TRAIN_PAGE.encode(), "text/html; charset=utf-8")
                 return
+            if self.path == "/edit" or self.path.startswith("/edit?"):
+                self._send(EDIT_PAGE.encode(), "text/html; charset=utf-8")
+                return
             if self.path == "/api/models":
+                cfg = TM.load_config()
                 self._json({
                     "store": TM.list_store_nns(store_dir),
                     "copy_sources": TM.list_copy_sources(store_dir),
-                    "defaults": {"model": TM.DEFAULT_MODEL_PARAMS,
-                                 "train": TM.DEFAULT_TRAIN_PARAMS},
+                    "defaults": {"model": cfg["model_defaults"],
+                                 "train": cfg["train_defaults"]},
+                    "options": cfg["options"],
+                    "editable": list(TM.EDITABLE_MODEL_FIELDS),
+                    "locked": list(TM.LOCKED_MODEL_FIELDS),
                 })
+                return
+            if self.path == "/api/config":
+                self._json(TM.load_config())
                 return
             if self.path == "/api/train/status":
                 self._json(trainer.status())
@@ -1370,6 +1538,15 @@ def make_handler(default_file, model_path=DEFAULT_MODEL, runs_dir=DEFAULT_RUNS_D
                     body = self._read_body()
                     entry = TM.copy_nn(store_dir, body.get("name", ""),
                                        body.get("source", ""))
+                    self._json({"ok": True, "entry": entry})
+                except Exception as e:
+                    self._json({"ok": False, "error": str(e)})
+                return
+            if self.path == "/api/nn/update":
+                try:
+                    body = self._read_body()
+                    entry = TM.update_nn(body.get("nn", ""),
+                                         body.get("model_params", {}))
                     self._json({"ok": True, "entry": entry})
                 except Exception as e:
                     self._json({"ok": False, "error": str(e)})

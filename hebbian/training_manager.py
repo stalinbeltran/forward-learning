@@ -49,6 +49,7 @@ SEQUENCE_OUT = "experiments/evolution/sequence.npz"
 RUNS_DIR = "experiments/evolution/runs"
 LASTEXPERIMENT_DIR = "lastexperiment"
 DATA_ROOT = "data"
+CONFIG_PATH = "app_config.json"
 # Also offer these (non-store) models as copy sources, so prior work is reusable.
 EXTRA_MODEL_GLOBS = ("experiments/**/model.npz", "lastexperiment/model.npz")
 
@@ -76,15 +77,78 @@ DEFAULT_MODEL_PARAMS = {
     "seed": 0,
 }
 
-# Per-training parameters (last-used values are remembered per NN).
+# Per-training parameters (last-used values are remembered per NN). These are
+# the built-in fallbacks; app_config.json overrides them (see load_config).
 DEFAULT_TRAIN_PARAMS = {
-    "lr": 0.15,
-    "epochs": 80,
-    "min_persistence": None,   # None = no early stop
-    "persist_patience": 5,
-    "image_index": 0,          # which dataset image drives the persistence trail
+    "lr": 0.001,
+    "epochs": 800,
+    "min_persistence": 0.7,    # None = no early stop
+    "persist_patience": 9,
+    "image_index": None,       # None/empty = train on ALL inputs of the set
     "key": "images",
 }
+
+# Viewer defaults (persistence-trail page) — also overridable via app_config.json.
+DEFAULT_VIEWER_PARAMS = {
+    "ms_per_step": 40,
+    "trail_speed": 0.30,
+    "fire_threshold": 0.40,
+    "autopause": True,
+}
+
+# Allowed choices for enumerated model hyperparameters (shown next to each field
+# in the UI and listed in app_config.json under "_options").
+MODEL_OPTIONS = {
+    "rule": ["above_mean", "softmax", "wta"],
+    "learning_rule": ["gate", "truth_table"],
+    "inhib_metric": ["cheby", "manhattan", "euclid"],
+    "inhib_mode": ["fraction", "hinge", "sigmoid"],
+}
+
+# Which model hyperparameters may be edited on an EXISTING (already-weighted) NN.
+# Structural fields are locked because the weights depend on them.
+EDITABLE_MODEL_FIELDS = (
+    "rule", "reinforce_gain", "learning_rule", "rule_n", "rule_m", "rule_hr",
+    "inhib_on", "inhib_spacing", "inhib_radius", "inhib_metric",
+    "fire_threshold", "inhib_K", "inhib_gain", "inhib_mode",
+)
+LOCKED_MODEL_FIELDS = ("n_in", "grid", "seed")  # would invalidate W / init only
+
+_MODEL_CASTS = {
+    "n_in": int, "grid": int, "seed": int,
+    "reinforce_gain": float, "rule_n": float, "rule_m": float, "rule_hr": float,
+    "inhib_spacing": int, "inhib_radius": int, "fire_threshold": float,
+    "inhib_K": float, "inhib_gain": float,
+    "rule": str, "learning_rule": str, "inhib_metric": str, "inhib_mode": str,
+}
+
+
+def load_config(path: str = CONFIG_PATH) -> dict:
+    """App defaults, built-ins merged under whatever ``app_config.json`` sets.
+
+    Read fresh on each call so editing the file takes effect without a restart.
+    Returns ``{train_defaults, model_defaults, viewer_defaults, options}``.
+    """
+    cfg = {
+        "train_defaults": dict(DEFAULT_TRAIN_PARAMS),
+        "model_defaults": dict(DEFAULT_MODEL_PARAMS),
+        "viewer_defaults": dict(DEFAULT_VIEWER_PARAMS),
+        "options": dict(MODEL_OPTIONS),
+    }
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception:
+            return cfg
+        for sec, key in (("train_defaults", "train_defaults"),
+                         ("model_defaults", "model_defaults"),
+                         ("viewer_defaults", "viewer_defaults")):
+            if isinstance(raw.get(key), dict):
+                cfg[sec].update(raw[key])
+        if isinstance(raw.get("_options"), dict):
+            cfg["options"] = raw["_options"]
+    return cfg
 
 _SCALAR_KEYS = (  # scalar/string hyperparameters readable without loading W
     "n_in", "n_out", "rule", "reinforce_gain",
@@ -251,9 +315,35 @@ def create_new_nn(store_dir: str, name: str, model_params: dict,
     layer = build_layer_from_params(model_params)
     model_path = os.path.join(nn_dir, "model.npz")
     layer.save(model_path)
-    tp = dict(DEFAULT_TRAIN_PARAMS, **(train_params or {}))
+    tp = dict(load_config()["train_defaults"], **(train_params or {}))
     write_train_params(nn_dir, tp)
     return _model_entry(model_path, name, True, nn_dir)
+
+
+def update_nn(nn_path: str, model_params: dict) -> dict:
+    """Edit an existing NN's hyperparameters in place (locked fields ignored).
+
+    Loads the NN, applies the editable model hyperparameters, rebuilds the
+    derived state (truth-table rule + inhibitor regions) and saves back — the
+    weights ``W`` are kept, only behaviour-shaping parameters change.
+    """
+    if not os.path.isfile(nn_path):
+        raise FileNotFoundError(f"no existe la NN: {nn_path}")
+    layer = CompetitiveLayer.load(nn_path)
+    for k in EDITABLE_MODEL_FIELDS:
+        if k not in model_params:
+            continue
+        v = model_params[k]
+        if k == "inhib_on":
+            layer.inhib_on = bool(v)
+            continue
+        if v is None or v == "":
+            continue
+        setattr(layer, k, _MODEL_CASTS.get(k, str)(v))
+    layer.rebuild_derived()
+    layer.save(nn_path)
+    nn_dir = os.path.dirname(nn_path)
+    return _model_entry(nn_path, os.path.basename(nn_dir), True, nn_dir)
 
 
 def copy_nn(store_dir: str, name: str, source_path: str) -> dict:
@@ -375,7 +465,18 @@ class TrainingManager:
             min_pers = tp.get("min_persistence")
             min_pers = None if min_pers in (None, "", "None") else float(min_pers)
             patience = int(tp["persist_patience"])
-            img_idx = int(tp["image_index"]) % len(X)
+            # image_index empty/None -> train on ALL inputs of the set; a value
+            # -> train only on that image. The persistence trail probes the
+            # given image, or image 0 when training on the whole set.
+            raw_idx = tp.get("image_index")
+            if raw_idx in (None, "", "None"):
+                train_X = X
+                img_idx = 0
+                probe_label = -1        # -1 marks "all inputs" in the sequence
+            else:
+                img_idx = int(raw_idx) % len(X)
+                train_X = X[img_idx:img_idx + 1]
+                probe_label = img_idx
             fixed = X[img_idx]
             thr = layer.fire_threshold
             rng = np.random.default_rng(layer.seed + layer.epochs_trained)
@@ -389,7 +490,7 @@ class TrainingManager:
                 if self._stop.is_set():
                     self._log(f"detenido por el usuario en la época {e}")
                     break
-                layer.train_epoch(X, lr, rng=rng)
+                layer.train_epoch(train_X, lr, rng=rng)
                 a = layer.activation(fixed).astype(np.float32)
                 seq.append(a)
                 fired = a >= thr
@@ -412,7 +513,7 @@ class TrainingManager:
 
             steps = len(seq) - 1
             self._finalize(layer, nn_path, dataset, key, np.stack(seq), fixed,
-                           img_idx, lr, steps, converged_at, tp)
+                           probe_label, lr, steps, converged_at, tp)
         except Exception as e:  # surface the failure in the status
             self._set(state="error", error=str(e))
             self._log(f"ERROR: {e}")
@@ -429,7 +530,8 @@ class TrainingManager:
         side = int(round(layer.n_in ** 0.5))
         nn_name = os.path.basename(nn_dir)
         stopped = self._stop.is_set()
-        label = (f"app · {nn_name} · {os.path.basename(dataset)} · img{img_idx} · "
+        who = "todas" if img_idx == -1 else f"img{img_idx}"
+        label = (f"app · {nn_name} · {os.path.basename(dataset)} · {who} · "
                  f"{steps}ép · lr{lr:g} · {layer.learning_rule}"
                  + (" · STOP" if stopped else ""))
         meta = {

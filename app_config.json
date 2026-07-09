@@ -1,0 +1,47 @@
+{
+  "__doc__": "Configuración de defaults de la app (webapp_evolution.py). Editá los valores; la app los relee sin reiniciar (pulsá 'Recargar listas' en /train, o recargá la página del visor). '_options' lista las opciones válidas de cada parámetro enumerado — no se usa como valor, es solo referencia y se muestra junto al campo en la UI.",
+
+  "train_defaults": {
+    "lr": 0.001,
+    "min_persistence": 0.7,
+    "epochs": 800,
+    "persist_patience": 9,
+    "image_index": null,
+    "key": "images"
+  },
+
+  "model_defaults": {
+    "n_in": 784,
+    "grid": 50,
+    "rule": "above_mean",
+    "reinforce_gain": 1.0,
+    "learning_rule": "gate",
+    "rule_n": 1.1,
+    "rule_m": 0.3,
+    "rule_hr": 0.1,
+    "inhib_on": true,
+    "inhib_spacing": 5,
+    "inhib_radius": 8,
+    "inhib_metric": "cheby",
+    "fire_threshold": 0.40,
+    "inhib_K": 0.10,
+    "inhib_gain": 1.5,
+    "inhib_mode": "fraction",
+    "seed": 0
+  },
+
+  "viewer_defaults": {
+    "ms_per_step": 40,
+    "trail_speed": 0.30,
+    "fire_threshold": 0.40,
+    "autopause": true
+  },
+
+  "_options": {
+    "rule": ["above_mean", "softmax", "wta"],
+    "learning_rule": ["gate", "truth_table"],
+    "inhib_metric": ["cheby", "manhattan", "euclid"],
+    "inhib_mode": ["fraction", "hinge", "sigmoid"],
+    "image_index": "vacío/null = entrenar con TODAS las entradas del set; un índice 0..N-1 = entrenar solo esa imagen"
+  }
+}
