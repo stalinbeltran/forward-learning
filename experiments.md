@@ -26,8 +26,7 @@ qué se corrió y con qué parámetros.
 | 4 | 2026-07-08 15:14 | `tt_smoke/` | `train.py --learning-rule truth_table` | `lines_tt/lines.npz` | `truth_table` | `lr=0.15`, `n=1.1`, `m=0.3`, `hr=0.1` | 5 | Smoke de la regla de tabla de verdad con `lr` grande → **colapso**: oscilador global, `unique_winners=4` fijo, `dead_units=2478` congelado. Motiva usar `lr` chico. |
 | 5 | 2026-07-08 15:43 | `evolution/` (`convergence.*`) | `gen_evolution.py` + `analyze_convergence.py` | `hline/hline.npz` (1 línea horizontal) | `truth_table` | `lr=0.001`, `--inhib`, `--min-persistence 0.7`, `epochs≈800` | ~800 | Evolución sobre una imagen fija para el visor. Análisis de convergencia: la cola dispara primero, sube suave; sin freno entra en ciclo límite (por eso `--min-persistence`). Genera `convergence.png/csv`. |
 | 6 | 2026-07-08 15:53 | `hlines_tt/` | `train_sequential.py --learning-rule truth_table` | `hlines_set/hlines.npz` (10 h-líneas) | `truth_table` | `lr=0.001`, `n=1.1`, `m=0.3`, `hr=0.1`, `--inhib`, `--min-persistence 0.7`, `--persist-patience 5`, `--max-epochs 400` | 510 tot. | **Mejor resultado.** Las **10/10** líneas convergen, cada una con un ganador distinto (813, 112, 398, 1714, 1186, …), `persistence` 0.70–0.83. Conjunto que dispara chico y estable (59–146). Escribe también `evolution/sequence.npz` para el visor. |
-| 7 | 2026-07-09 08:37 | `evolution/runs/` (`run_20260709-083648.npz`, `run_20260709-083701.npz`) | `gen_evolution.py` (×2) | `hline/hline.npz` (1 h-línea) | `gate` (run 1) · `truth_table` (run 2) | run 1: fresco, `--epochs 20`, `--lr 0.15`, `--inhib`; run 2: **misma NN** `--model lastexperiment/model.npz`, `--epochs 15`, `--lr 0.15`, `--inhib` | 20 · 15 | **Verificación del archivado por-run** (feature nueva). Cada corrida se archiva sin sobrescribir → 2 runs en `evolution/runs/`; el visor los lista con el más reciente arriba (★) y sirve cualquiera por `?file=`. Corridas de prueba (no un resultado de modelado). `lastexperiment/` **se dejó intacto** (sigue siendo el #6): `gen_evolution.py` no produce `model.npz`, así que no hay artefacto de modelo que copiar y sobrescribirlo borraría la NN canónica que usa `/test`. |
-| 8 | 2026-07-09 09:05 | `evolution/runs/run_20260709-090515.npz` | `gen_evolution.py` | `hline/hline.npz` (1 h-línea) | `truth_table` | **misma NN** `--model lastexperiment/model.npz`, `--epochs 12`, `--lr 0.1`, `--inhib` | 12 | **Verificación del selector de dos niveles** (NN → secuencia). Tercer run sobre la misma NN (`lastexperiment/model.npz`) → esa NN queda con **2 secuencias** en el visor (la de 09:05 por defecto, la de 08:37 debajo), y aparece arriba con ★ frente a la "NN nueva" fresca de 08:36 (1 secuencia). Corrida de prueba; `lastexperiment/` intacto (sigue el #6). |
+| 7 | 2026-07-09 09:13 | `hlines_tt2/` | `train_sequential.py --learning-rule truth_table` | `hlines_set/hlines.npz` (10 h-líneas) | `truth_table` | `lr=0.001`, `n=1.1`, `m=0.3`, `hr=0.1`, `--inhib`, `--min-persistence 0.7`, `--persist-patience 5`, `--max-epochs 400` (mismos que #6) | 510 tot. | **Nueva NN con los parámetros del #6.** Reproduce el #6 tal cual (mismo `seed=0`): **10/10** convergen con los mismos ganadores (813, 112, 398, 1714, 1186, 866, 2498, 1054, 931, 1190), `persistence` 0.70–0.83, conjunto 59–151. Es ahora el `lastexperiment/`. Escribe `evolution/sequence.npz` + run archivado. |
 
 > **Nota sobre la reconstrucción inicial:** las filas 1–6 se reconstruyeron a
 > partir de los artefactos (`metrics.csv` / `sequential.csv`), las fechas de sus
@@ -37,10 +36,14 @@ qué se corrió y con qué parámetros.
 
 ## Último experimento
 
-La última corrida registrada es la **#7** (2026-07-09 08:37), pero fue una
-**verificación** del archivado por-run de `gen_evolution.py` (sin `model.npz`).
-Por eso [lastexperiment/](lastexperiment/) **sigue reflejando el #6 `hlines_tt`**
-(2026-07-08 15:53) — el último experimento con un modelo real —, con su copia
-completa (`model.npz` + `sequential.csv`) y `META.txt`. Es además la NN que la
-página `/test` del visor usa como "NN actual", así que no se sobrescribió con una
-corrida de prueba que la habría borrado.
+La última corrida es la **#7 `hlines_tt2`** (2026-07-09 09:13): nueva NN con los
+mismos parámetros del #6, entrenada sobre las 10 líneas horizontales.
+[lastexperiment/](lastexperiment/) refleja esta corrida (`model.npz` +
+`sequential.csv` + `META.txt`), y es la NN que la página `/test` del visor usa
+como "NN actual".
+
+> **Nota de limpieza (2026-07-09):** las antiguas filas #7 y #8 (corridas de
+> prueba de `gen_evolution.py` sobre una sola línea, que verificaban el archivado
+> por-run y el selector de dos niveles del visor) se **eliminaron** de esta tabla
+> y sus artefactos archivados (`evolution/runs/run_20260709-083648.npz`,
+> `…-083701.npz`, `…-090515.npz`) se borraron por ser solo pruebas.
