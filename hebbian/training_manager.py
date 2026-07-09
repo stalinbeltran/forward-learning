@@ -481,9 +481,18 @@ class TrainingManager:
             thr = layer.fire_threshold
             rng = np.random.default_rng(layer.seed + layer.epochs_trained)
 
+            # Convergence scope: when training on ALL inputs, persistence must be
+            # measured over the WHOLE set (mean per-input persistence) — otherwise
+            # a single probe image converging would cut the run short before the
+            # rest of the set is learned. When training a single image, the probe
+            # IS the whole training set, so the two agree.
+            all_inputs = probe_label == -1
             a0 = layer.activation(fixed).astype(np.float32)
             seq = [a0]
-            run = (a0 >= thr).astype(np.int64)
+            if all_inputs:
+                run_all = (M.activations(layer.W, X) >= thr).astype(np.int64)
+            else:
+                run = (a0 >= thr).astype(np.int64)
             converged_at = None
 
             for e in range(epochs):
@@ -491,20 +500,37 @@ class TrainingManager:
                     self._log(f"detenido por el usuario en la época {e}")
                     break
                 layer.train_epoch(train_X, lr, rng=rng)
-                a = layer.activation(fixed).astype(np.float32)
+                if all_inputs:
+                    A = M.activations(layer.W, X)          # (N_inputs, n_out)
+                    a = A[img_idx].astype(np.float32)      # probe (image 0) for the trail
+                    fired_all = A >= thr
+                    run_all = np.where(fired_all, run_all + 1, 0)
+                    nf_per = fired_all.sum(1)              # fired neurons per input
+                    valid = nf_per > 0
+                    frac = (run_all >= patience).sum(1) / np.maximum(nf_per, 1)
+                    pers = float(frac[valid].mean()) if valid.any() else 0.0
+                    n_fired = int(round(float(nf_per.mean()))) if len(nf_per) else 0
+                    w = A.argmax(1)
+                    uniq = int(len(np.unique(w)))
+                    cov = uniq / layer.n_out
+                    scope = "set"
+                else:
+                    a = layer.activation(fixed).astype(np.float32)
+                    fired = a >= thr
+                    run = np.where(fired, run + 1, 0)
+                    n_fired = int(fired.sum())
+                    pers = (int((run >= patience).sum()) / n_fired) if n_fired else 0.0
+                    m = M.epoch_metrics(layer, X)
+                    cov = m["coverage"]
+                    uniq = m["unique_winners"]
+                    scope = "img"
                 seq.append(a)
-                fired = a >= thr
-                run = np.where(fired, run + 1, 0)
-                n_fired = int(fired.sum())
-                pers = (int((run >= patience).sum()) / n_fired) if n_fired else 0.0
-                m = M.epoch_metrics(layer, X)
                 self._set(epoch=e + 1, persistence=round(pers, 3),
-                          n_fired=n_fired, coverage=round(m["coverage"], 3),
-                          unique_winners=m["unique_winners"])
+                          n_fired=n_fired, coverage=round(cov, 3),
+                          unique_winners=uniq, persist_scope=scope)
                 self._log(
-                    f"época {e+1}/{epochs}  fired={n_fired}  "
-                    f"persist={pers:.3f}  cov={m['coverage']:.3f}  "
-                    f"uniq={m['unique_winners']}")
+                    f"época {e+1}/{epochs}  fired{'(μ)' if all_inputs else ''}={n_fired}  "
+                    f"persist({scope})={pers:.3f}  cov={cov:.3f}  uniq={uniq}")
                 if min_pers is not None and pers >= min_pers:
                     converged_at = e + 1
                     self._log(f"CONVERGIÓ en la época {converged_at} "

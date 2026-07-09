@@ -286,6 +286,12 @@ Flujo de la página (cuatro pasos):
      por época). Un índice `0..N-1` entrena **solo** esa imagen. En ambos casos
      el *persistence trail* sigue una imagen fija (la indicada, o la 0 cuando se
      entrena con todas).
+   - **Convergencia (`min_persistence`) según el modo:** al entrenar con todas
+     las entradas, la persistencia se mide sobre **todo el set** (promedio de la
+     persistencia por entrada), así el early-stop espera a que **el set** se
+     estabilice y no corta apenas converge la imagen sonda. Al entrenar una sola
+     imagen, se mide sobre esa imagen. El tile *persistencia* y el log indican el
+     alcance (`todo el set` / `imagen`).
 4. **Correr** — **Iniciar entrenamiento** (deshabilitado hasta elegir NN + set
    compatible) y **Detener** (para la corrida en curso; escribe la secuencia
    parcial y guarda la NN igual). La página muestra época/total, persistencia,

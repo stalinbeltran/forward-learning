@@ -1150,7 +1150,8 @@ function renderStatus(s){
   el('start').disabled = running; el('stop').disabled = !running;
   if(!running) updateStart();
   const tiles=[['estado',s.state],['época',(s.epoch||0)+'/'+(s.total||'?')],
-    ['persistencia',s.persistence!=null?s.persistence:'—'],
+    ['persistencia'+(s.persist_scope?' ('+(s.persist_scope==='set'?'todo el set':'imagen')+')':''),
+      s.persistence!=null?s.persistence:'—'],
     ['disparan',s.n_fired!=null?s.n_fired:'—'],
     ['ganadoras',s.unique_winners!=null?s.unique_winners:'—'],
     ['cobertura',s.coverage!=null?s.coverage:'—']];
