@@ -88,7 +88,8 @@ PAGE = """<!doctype html>
     <button id="reset">Reset trail</button><button id="refresh">Refrescar</button>
     <a class="btn" id="testlink" href="/test">Probar NN &#128300;</a>
     <a class="btn" id="applylink" href="/apply">Aplicar set &#127919;</a></div>
-  <div class="ctl"><label>entrenamiento</label><select id="run" title="mas reciente arriba"></select></div>
+  <div class="ctl"><label>NN</label><select id="nn" title="red entrenada; mas reciente arriba"></select></div>
+  <div class="ctl"><label>secuencia</label><select id="run" title="entrenamiento de esta NN; mas reciente arriba"></select></div>
   <div class="ctl"><label>ms/step <span class="val" id="msv">40</span></label>
     <input type="range" id="ms" min="30" max="1500" step="10" value="40"></div>
   <div class="ctl"><label>trail speed <span class="val" id="rtv">0.30</span></label>
@@ -113,7 +114,7 @@ PAGE = """<!doctype html>
 <script>
 let META=null, SEQ=null, IMGSEQ=null, IMG=null, step=0, trail=null, timer=null, playing=true, thTouched=false;
 let blockEnd=null, heldAtBoundary=false;  // auto-pause on the last frame of each trained image
-let RUNS=[];  // archived trainings, most recent first (populated from /api/runs)
+let NNS=[];  // trained NNs, most recent first; each holds its sequences (idem)
 const el = id => document.getElementById(id);
 
 function computeBlockEnds(){
@@ -206,30 +207,46 @@ el('play').onclick=()=>{
 el('skip').onclick=()=>jumpTo(nextInputTarget());
 el('reset').onclick=()=>{resetTrail(); render();};
 el('refresh').onclick=()=>refresh();
+el('nn').onchange=()=>{ populateRuns(el('nn').value); load(true); };
 el('run').onchange=()=>load(true);
 el('ms').oninput=()=>el('msv').textContent=el('ms').value;
 el('rt').oninput=()=>el('rtv').textContent=parseFloat(el('rt').value).toFixed(2);
 el('th').oninput=()=>{thTouched=true; el('thv').textContent=parseFloat(el('th').value).toFixed(2);};
 
-async function loadRuns(){
-  // Refresh the runs list (most recent first), keeping the current selection if
-  // it still exists; otherwise select the newest.
-  const prev = el('run').value;
-  try{ RUNS = (await (await fetch('/api/runs')).json()).runs || []; }
-  catch(e){ RUNS=[]; }
+function populateRuns(nnId, preferRun){
+  // Fill the sequence selector with the chosen NN's runs (most recent first);
+  // keep `preferRun` if it still belongs to this NN, else pick the newest.
+  const g = NNS.find(x=>x.nn_id===nnId) || NNS[0];
   const sel = el('run'); sel.innerHTML='';
-  RUNS.forEach((r,i)=>{
-    const o=document.createElement('option'); o.value=r.file||r.path;
+  if(!g){ return; }
+  g.sequences.forEach((r,i)=>{
+    const o=document.createElement('option'); o.value=r.path;
     o.textContent=(i===0?'★ ':'')+r.label+'  ['+r.mtime+']';
     sel.appendChild(o);
   });
-  if(RUNS.length){
-    const keep = RUNS.find(r=>(r.file||r.path)===prev);
-    sel.value = keep ? prev : (RUNS[0].file||RUNS[0].path);
-  }
+  const keep = g.sequences.find(r=>r.path===preferRun);
+  sel.value = keep ? preferRun : g.sequences[0].path;
+}
+async function loadNns(){
+  // Refresh the NN list (most recent first) and its sequences, keeping the
+  // current NN/sequence selection if still present; otherwise pick the newest.
+  const prevNn = el('nn').value, prevRun = el('run').value;
+  try{ NNS = (await (await fetch('/api/nns')).json()).nns || []; }
+  catch(e){ NNS=[]; }
+  const sel = el('nn'); sel.innerHTML='';
+  NNS.forEach((g,i)=>{
+    const o=document.createElement('option'); o.value=g.nn_id;
+    o.textContent=(i===0?'★ ':'')+g.nn_label+' · '+g.sequences.length+' sec';
+    sel.appendChild(o);
+  });
+  if(NNS.length){
+    const keepNn = NNS.find(g=>g.nn_id===prevNn);
+    sel.value = keepNn ? prevNn : NNS[0].nn_id;
+    populateRuns(sel.value, prevRun);
+  } else { el('run').innerHTML=''; }
 }
 function selectedFile(){ return el('run').value || ''; }
-async function refresh(){ await loadRuns(); await load(true); }
+async function refresh(){ await loadNns(); await load(true); }
 
 async function load(manual){
   try{
@@ -249,7 +266,7 @@ async function load(manual){
     el('status').textContent=(manual?'refrescado ':'cargado ')+t+' · '+META.mtime;
   }catch(e){ el('status').textContent='error al cargar: '+e; }
 }
-(async()=>{ await loadRuns(); await load(false); tick(); })();
+(async()=>{ await loadNns(); await load(false); tick(); })();
 </script></body></html>"""
 
 
@@ -332,6 +349,49 @@ def scan_runs(runs_dir, default_file):
             pass
     runs.sort(key=lambda r: r["created"], reverse=True)  # most recent first
     return runs
+
+
+def _nn_identity(entry):
+    """Which NN produced this run: identity key + human label.
+
+    A run that continued a saved model (``--model``/``--resume``) belongs to that
+    model file, so every training of it groups together. A ``fresh`` run started
+    from random weights that were never saved, so it is its own one-off NN.
+    """
+    src = (entry.get("model_source") or "").strip()
+    if src and src != "fresh":
+        norm = os.path.normpath(src).replace("\\", "/")
+        label = "/".join(norm.split("/")[-2:])  # last two path parts, readable
+        return norm, label
+    ds = os.path.basename(entry.get("dataset") or "")
+    label = "NN nueva" + (f" · {ds}" if ds else "") + f" · {entry['mtime']}"
+    return "fresh:" + entry["path"], label
+
+
+def scan_nns(runs_dir, default_file):
+    """Group archived runs by NN (most recent NN first).
+
+    Returns a list of ``{nn_id, nn_label, latest, sequences}`` where
+    ``sequences`` are that NN's runs, most recent first, and the whole list is
+    ordered by each NN's latest activity — so the last-trained NN is on top and
+    its newest sequence is first.
+    """
+    groups, order = {}, []
+    for r in scan_runs(runs_dir, default_file):  # already most recent first
+        nid, nlabel = _nn_identity(r)
+        r = dict(r, nn_id=nid, nn_label=nlabel)
+        g = groups.get(nid)
+        if g is None:
+            g = groups[nid] = {"nn_id": nid, "nn_label": nlabel,
+                               "latest": r["created"], "sequences": []}
+            order.append(nid)
+        g["sequences"].append(r)
+        g["latest"] = max(g["latest"], r["created"])
+    nns = [groups[nid] for nid in order]
+    for g in nns:
+        g["sequences"].sort(key=lambda r: r["created"], reverse=True)
+    nns.sort(key=lambda g: g["latest"], reverse=True)
+    return nns
 
 
 # --------------------------------------------------------------- test page ---
@@ -938,6 +998,9 @@ def make_handler(default_file, model_path=DEFAULT_MODEL, runs_dir=DEFAULT_RUNS_D
                 return
             if self.path == "/api/runs":
                 self._json({"runs": scan_runs(runs_dir, default_file)})
+                return
+            if self.path == "/api/nns":
+                self._json({"nns": scan_nns(runs_dir, default_file)})
                 return
             file_param = parse_qs(urlparse(self.path).query).get("file", [None])[0]
             meta_p, seq_p, image_p, imgseq_p = payloads(file_param)

@@ -10,10 +10,15 @@ entrada** y ver, paso a paso en la webapp, cómo las neuronas van aprendiendo.
 >   "último") **y** una copia archivada con timestamp en
 >   `experiments/evolution/runs/run_YYYYMMDD-HHMMSS.npz` que **nunca se
 >   sobrescribe**. Así cada entrenamiento queda registrado para revisarlo luego.
-> - `webapp_evolution.py` es un servidor puro que **lista** esos runs (el más
->   reciente arriba, marcado con ★) en un selector y sirve el que elijas. El botón
->   **Refrescar** vuelve a leer la lista y el run seleccionado desde disco, así que
->   un entrenamiento nuevo aparece **sin reiniciar el servidor**.
+> - `webapp_evolution.py` es un servidor puro que **agrupa** esos runs por la NN
+>   que los generó. La cabecera tiene **dos selectores**: **NN** (redes entrenadas,
+>   la más reciente arriba con ★) y **secuencia** (los entrenamientos de esa NN,
+>   el más reciente por defecto). El botón **Refrescar** vuelve a leer todo desde
+>   disco, así que un entrenamiento nuevo aparece **sin reiniciar el servidor**.
+>
+>   Identidad de la NN: un run que continúa un modelo guardado (`--model` /
+>   `--resume`) se agrupa bajo ese `model.npz` (todos sus entrenamientos juntos);
+>   un run **fresco** (pesos aleatorios nunca guardados) es una NN de un solo uso.
 
 Prefijo del intérprete del entorno virtual: `.venv\Scripts\python.exe`
 
@@ -193,9 +198,10 @@ lo omiten y el panel queda fijo, como antes).
 
 Luego abre: http://127.0.0.1:8000 (visor) o http://127.0.0.1:8000/test (pruebas).
 
-En el visor, el selector **entrenamiento** (arriba) lista todos los runs
-archivados con el **más reciente arriba** (marcado con ★); elige cualquiera para
-revisarlo. El seleccionado por defecto es el último.
+En el visor, la cabecera tiene **dos selectores**: **NN** (las redes entrenadas,
+la más reciente arriba con ★ y preseleccionada) y **secuencia** (los
+entrenamientos de esa NN, el más reciente por defecto). Elige NN y luego la
+secuencia que quieras revisar.
 
 - `--file` — archivo fijo de respaldo (el "último"; por defecto
   `experiments/evolution/sequence.npz`).
@@ -215,8 +221,9 @@ entrenamiento pulsa **Refrescar**, y para probar un modelo reentrenado pulsa
 
 Con el servidor del paso 3 corriendo, vuelve a ejecutar el **paso 2** (misma
 imagen u otra, con o sin `--model` para continuar la misma NN) y pulsa
-**Refrescar** en la página. El nuevo entrenamiento aparece **arriba** (★) en el
-selector **entrenamiento** y se carga; los anteriores siguen en la lista para
+**Refrescar** en la página. El nuevo entrenamiento aparece **arriba** (★): su NN
+queda preseleccionada en el selector **NN** y su secuencia como la primera del
+selector **secuencia**, y se carga; los anteriores siguen en las listas para
 revisarlos. **No hace falta reiniciar nada.**
 (De igual forma, para probar un modelo reentrenado en `/test`, pulsa **Recargar
 NN**: relee `lastexperiment/model.npz` del disco sin reiniciar.)
