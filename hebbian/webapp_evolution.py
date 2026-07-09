@@ -25,6 +25,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
+from urllib.parse import urlparse, parse_qs
 
 try:
     from .competitive_net import CompetitiveLayer
@@ -62,6 +63,7 @@ PAGE = """<!doctype html>
   button:hover, a.btn:hover { border-color:#3a4256; }
   a.btn { text-decoration:none; display:inline-block; }
   #testlink { border-color:#2f6feb; color:#9ec1ff; }
+  #applylink { border-color:#2f8f5f; color:#8fe0b0; }
   #refresh { border-color:#2f6feb; color:#9ec1ff; }
   #status { color:#6b7488; font-size:12px; font-variant-numeric:tabular-nums; }
   #apnote { color:#f0b849; font-size:12px; font-weight:600; }
@@ -79,7 +81,8 @@ PAGE = """<!doctype html>
   <h1>persistence trail &middot; epoch <span class="val" id="ep">0</span>/<span id="steps">?</span></h1>
   <div class="ctl"><button id="play">Pause</button><button id="skip">Saltar &#9197;</button>
     <button id="reset">Reset trail</button><button id="refresh">Refrescar</button>
-    <a class="btn" id="testlink" href="/test">Probar NN &#128300;</a></div>
+    <a class="btn" id="testlink" href="/test">Probar NN &#128300;</a>
+    <a class="btn" id="applylink" href="/apply">Aplicar set &#127919;</a></div>
   <div class="ctl"><label>ms/step <span class="val" id="msv">40</span></label>
     <input type="range" id="ms" min="30" max="1500" step="10" value="40"></div>
   <div class="ctl"><label>trail speed <span class="val" id="rtv">0.30</span></label>
@@ -400,6 +403,36 @@ def evaluate(layer, paths, threshold):
             "map_h": layer.grid_h, "map_w": layer.grid_w}
 
 
+def apply_dataset(layer, path):
+    """Run the frozen model over every input of one dataset, for the /apply
+    replay. Validates compatibility first; returns per-input activation maps
+    (``seq``) and the input images (``imgseq``) in the same shape the viewer
+    already knows how to play back. Threshold is applied client-side."""
+    try:
+        X, key = _load_images(path)
+    except Exception as e:
+        return {"ok": False, "error": f"no se pudo leer {path}: {e}"}
+    if X.shape[1] != layer.n_in:
+        return {"ok": False,
+                "error": f"incompatible: dim {X.shape[1]} != n_in {layer.n_in}"}
+    A = M.activations(layer.W, X)
+    side = int(round(layer.n_in ** 0.5))
+    disp = X * 255.0 if float(X.max(initial=0.0)) <= 1.0 else X
+    imgseq = np.clip(disp, 0, 255).astype(np.uint8)
+    return {
+        "ok": True,
+        "path": path.replace("\\", "/"),
+        "key": key,
+        "n": int(X.shape[0]),
+        "side": side,
+        "map_h": layer.grid_h,
+        "map_w": layer.grid_w,
+        "fire_threshold": float(layer.fire_threshold),
+        "seq": np.round(A, 4).tolist(),
+        "imgseq": imgseq.tolist(),
+    }
+
+
 TEST_PAGE = """<!doctype html>
 <html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -585,6 +618,150 @@ loadModel();
 </script></body></html>"""
 
 
+APPLY_PAGE = """<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aplicar set a la NN actual</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; background:#0b0d12; color:#e6e9ef; font:14px/1.5 system-ui, sans-serif; }
+  header { padding:14px 18px; border-bottom:1px solid #222836;
+           display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:600; }
+  .ctl { display:flex; gap:8px; align-items:center; }
+  label { color:#9aa4b6; font-size:12px; }
+  input[type=range] { width:130px; accent-color:#6ea8fe; }
+  button, a.btn, select { background:#161b26; color:#e6e9ef; border:1px solid #2a3242;
+           border-radius:6px; padding:5px 10px; font:inherit; cursor:pointer; }
+  button:hover, a.btn:hover, select:hover { border-color:#3a4256; }
+  a.btn { text-decoration:none; display:inline-block; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  #status, #minfo { color:#6b7488; font-size:12px; font-variant-numeric:tabular-nums; }
+  .val { font-variant-numeric:tabular-nums; color:#6ea8fe; }
+  main { display:flex; gap:36px; justify-content:center; align-items:flex-start;
+         padding:30px 18px; flex-wrap:wrap; }
+  .col { text-align:center; }
+  .col h2 { font-size:12px; color:#9aa4b6; font-weight:600; margin:0 0 10px;
+            text-transform:uppercase; letter-spacing:.08em; }
+  canvas { image-rendering:pixelated; background:#000; border:1px solid #222836; border-radius:4px; }
+  .fired { color:#9aa4b6; font-size:12px; margin-top:8px; }
+</style></head>
+<body>
+<header>
+  <h1>aplicar set &middot; entrada <span class="val" id="idx">0</span>/<span id="n">?</span></h1>
+  <a class="btn" href="/">&larr; visor entrenamiento</a>
+  <a class="btn" href="/test">análisis /test</a>
+  <div class="ctl"><label>dataset</label><select id="dataset"></select></div>
+  <div class="ctl"><button id="play">Pause</button>
+    <button id="prev">&larr;</button><button id="next">&rarr;</button>
+    <button id="reset">Reset trail</button><button id="reload">Recargar NN</button></div>
+  <div class="ctl"><label>ms/entrada <span class="val" id="msv">120</span></label>
+    <input type="range" id="ms" min="30" max="1500" step="10" value="120"></div>
+  <div class="ctl"><label>trail speed <span class="val" id="rtv">0.30</span></label>
+    <input type="range" id="rt" min="0.02" max="1" step="0.02" value="0.30"></div>
+  <div class="ctl"><label>&theta; <span class="val" id="thv">0.40</span></label>
+    <input type="range" id="th" min="0" max="1" step="0.01" value="0.40"></div>
+  <span id="minfo"></span><span id="status"></span>
+</header>
+<main>
+  <div class="col"><h2>Input (this one)</h2>
+    <canvas id="img" width="28" height="28" style="width:168px;height:168px"></canvas></div>
+  <div class="col"><h2>Firing (this input)</h2>
+    <canvas id="now" width="50" height="50" style="width:300px;height:300px"></canvas>
+    <div class="fired">fired: <span id="fired">0</span> · winner #<span id="win">-</span></div></div>
+  <div class="col"><h2>Uso acumulado</h2>
+    <canvas id="trail" width="50" height="50" style="width:300px;height:300px"></canvas>
+    <div class="fired">brillo = neuronas usadas a lo largo del set</div></div>
+</main>
+<script>
+let MODEL=null, DATASETS=[], META=null, SEQ=null, IMGSEQ=null;
+let step=0, trail=null, timer=null, playing=true, thTouched=false;
+const el = id => document.getElementById(id);
+
+function drawImg(canvas, arr, side){
+  const ctx=canvas.getContext('2d'), im=ctx.createImageData(side,side);
+  for(let i=0;i<arr.length;i++){const v=arr[i];im.data[i*4]=v;im.data[i*4+1]=v;im.data[i*4+2]=v;im.data[i*4+3]=255;}
+  ctx.putImageData(im,0,0);
+}
+function drawNow(act, th){
+  const ctx=el('now').getContext('2d'), n=act.length, im=ctx.createImageData(META.map_w,META.map_h);
+  let fired=0, mx=-1e9, arg=0;
+  for(let i=0;i<n;i++){ if(act[i]>mx){mx=act[i];arg=i;} }
+  for(let i=0;i<n;i++){ const on=act[i]>=th; if(on)fired++;
+    const v=on?255:0; im.data[i*4]=v; im.data[i*4+1]=v; im.data[i*4+2]=on?255:0; im.data[i*4+3]=255; }
+  ctx.putImageData(im,0,0); el('win').textContent=arg; return fired;
+}
+function accumTrail(act, th, rate){
+  // "uso acumulado": monotonic — a neuron brightens when it fires and never
+  // fades (no decay term), so the panel builds up the set's usage map. Called
+  // once per input advance, NOT on every re-draw (would over-count).
+  for(let i=0;i<act.length;i++){ if(act[i]>=th) trail[i] += rate*(1-trail[i]); }
+}
+function drawTrail(){
+  const ctx=el('trail').getContext('2d'), im=ctx.createImageData(META.map_w,META.map_h);
+  for(let i=0;i<trail.length;i++){ const v=Math.round(trail[i]*255);
+    im.data[i*4]=v; im.data[i*4+1]=v; im.data[i*4+2]=Math.min(255,v+20); im.data[i*4+3]=255; }
+  ctx.putImageData(im,0,0);
+}
+function resetTrail(){ trail=new Float32Array(META.map_w*META.map_h); drawTrail(); }
+function render(){  // advance to a new input: accumulate the trail once, then draw
+  const th=parseFloat(el('th').value), rate=parseFloat(el('rt').value);
+  el('idx').textContent=step;
+  drawImg(el('img'), IMGSEQ[step], META.side);
+  el('fired').textContent=drawNow(SEQ[step], th);
+  accumTrail(SEQ[step], th, rate); drawTrail();
+}
+function redraw(){  // re-draw current step WITHOUT re-accumulating (e.g. on θ drag)
+  el('fired').textContent=drawNow(SEQ[step], parseFloat(el('th').value)); drawTrail();
+}
+function advance(){ step=(step+1)%SEQ.length; if(step===0) resetTrail(); render(); }
+function setPlaying(p){ playing=p; el('play').textContent=p?'Pause':'Play'; }
+function step_(d){ setPlaying(false); step=(step+d+SEQ.length)%SEQ.length; if(step===0) resetTrail(); render(); }
+function tick(){ if(playing && SEQ) advance(); timer=setTimeout(tick, parseInt(el('ms').value)); }
+
+el('play').onclick=()=>setPlaying(!playing);
+el('prev').onclick=()=>step_(-1);
+el('next').onclick=()=>step_(1);
+el('reset').onclick=()=>{resetTrail(); render();};
+el('reload').onclick=()=>init();
+el('ms').oninput=()=>el('msv').textContent=el('ms').value;
+el('rt').oninput=()=>el('rtv').textContent=parseFloat(el('rt').value).toFixed(2);
+el('th').oninput=()=>{thTouched=true; el('thv').textContent=parseFloat(el('th').value).toFixed(2); if(SEQ) redraw();};
+el('dataset').onchange=()=>loadApply(el('dataset').value);
+
+async function loadApply(path){
+  if(!path){ el('status').textContent='no hay datasets compatibles'; return; }
+  el('status').textContent='aplicando…';
+  try{
+    const r=await (await fetch('/api/apply?path='+encodeURIComponent(path))).json();
+    if(!r.ok){ el('status').textContent='error: '+r.error; return; }
+    META=r; SEQ=r.seq; IMGSEQ=r.imgseq; step=0;
+    el('n').textContent=SEQ.length-1;
+    if(!thTouched){ el('th').value=META.fire_threshold; el('thv').textContent=META.fire_threshold.toFixed(2); }
+    resetTrail(); render();
+    el('status').textContent='listo · '+r.n+' entradas · '+r.path;
+  }catch(e){ el('status').textContent='error: '+e; }
+}
+async function init(){
+  const m=await (await fetch('/api/model')).json();
+  if(m.error){ el('minfo').textContent=m.error; return; }
+  MODEL=m;
+  el('minfo').textContent='NN: '+m.n_in+'→'+m.n_out+' · '+m.learning_rule+' · '+m.epochs_trained+' épocas';
+  DATASETS=(await (await fetch('/api/datasets')).json()).datasets;
+  const sel=el('dataset'); sel.innerHTML='';
+  DATASETS.forEach(d=>{
+    const o=document.createElement('option'); o.value=d.path;
+    o.textContent=d.path+' ('+d.n+')'+(d.compatible?'':' — incompatible');
+    o.disabled=!d.compatible; sel.appendChild(o);
+  });
+  const first=DATASETS.find(d=>d.compatible);
+  if(first){ sel.value=first.path; await loadApply(first.path); }
+  else el('status').textContent='no hay datasets compatibles con esta NN';
+}
+(async()=>{ await init(); tick(); })();
+</script></body></html>"""
+
+
 def make_handler(path, model_path=DEFAULT_MODEL):
     # Cache payloads keyed by the file's mtime; rebuild only when the file changes.
     cache = {"mtime": None, "payloads": None}
@@ -629,6 +806,21 @@ def make_handler(path, model_path=DEFAULT_MODEL):
                 return
             if self.path == "/test" or self.path.startswith("/test?"):
                 self._send(TEST_PAGE.encode(), "text/html; charset=utf-8")
+                return
+            if self.path == "/apply" or self.path.startswith("/apply?"):
+                self._send(APPLY_PAGE.encode(), "text/html; charset=utf-8")
+                return
+            if self.path.startswith("/api/apply"):
+                layer, info = load_current_model(model_path)
+                if layer is None:
+                    self._json({"ok": False, "error": info.get("error", "sin modelo")})
+                    return
+                qs = parse_qs(urlparse(self.path).query)
+                ds = qs.get("path", [None])[0]
+                if not ds:
+                    self._json({"ok": False, "error": "falta ?path=<dataset>"})
+                    return
+                self._json(apply_dataset(layer, ds))
                 return
             if self.path == "/api/model":
                 _, info = load_current_model(model_path)

@@ -363,16 +363,35 @@ Además de todos los flags del modelo (sección A), tiene:
 | `--model` | `lastexperiment/model.npz` | modelo de la **NN actual** para la página `/test` (el último experimento; se recarga por `mtime`, no queda fijo). |
 | `--port` | `8000` | puerto HTTP. |
 
-**Página de pruebas (`/test`):** el visor tiene un botón **"Probar NN 🔬"** en la
-cabecera que lleva a `http://127.0.0.1:8000/test`. Ahí se elige entre todos los
-sets de `data/` (incluidos los de entrenamiento) cuáles probar sobre la NN
-actual; cada set se **valida contra la dimensión de entrada** de la red (los
-incompatibles quedan bloqueados y no se aplican) y se muestran métricas
-agregadas (cobertura, neuronas ganadoras, activación del ganador, disparos por
-entrada, neuronas muertas), un mapa 50×50 de ganadoras, un mapa de fracción de
-disparo y el detalle por dataset y por entrada. El botón **"Recargar NN"** vuelve
-a leer el modelo del disco, así que tras reentrenar (nuevo `lastexperiment/`)
-basta pulsarlo — sin reiniciar el servidor.
+El mismo servidor sirve **tres páginas** (mismo puerto), enlazadas entre sí desde
+la cabecera del visor:
+
+- `/` — **visor de entrenamiento** (persistence trail; §3 arriba).
+- `/test` — **análisis agregado** de aplicar sets a la NN actual.
+- `/apply` — **replay visual** de aplicar un set a la NN entrenada, entrada por
+  entrada.
+
+**Página de pruebas (`/test`):** botón **"Probar NN 🔬"** →
+`http://127.0.0.1:8000/test`. Se elige entre todos los sets de `data/` (incluidos
+los de entrenamiento) cuáles probar sobre la NN actual; cada set se **valida
+contra la dimensión de entrada** de la red (los incompatibles quedan bloqueados y
+no se aplican) y se muestran métricas agregadas (cobertura, neuronas ganadoras,
+activación del ganador, disparos por entrada, neuronas muertas), un mapa 50×50 de
+ganadoras, un mapa de fracción de disparo y el detalle por dataset y por entrada.
+
+**Página de aplicación (`/apply`):** botón **"Aplicar set 🎯"** →
+`http://127.0.0.1:8000/apply`. Reproduce, **entrada por entrada**, la respuesta de
+la NN **congelada** (sin aprendizaje) sobre el dataset elegido en el desplegable
+(solo se listan los compatibles; el cómputo se valida igual que en `/test`). Tres
+paneles: *Input (this one)* (la entrada actual), *Firing (this input)* (neuronas
+que disparan con esa entrada + ganador) y *Uso acumulado* (trail **monotónico**:
+las neuronas se iluminan al disparar y no se apagan, construyendo el mapa de uso
+del set conforme avanzas). Controles: dataset, play/pausa, ←/→, `ms/entrada`,
+`trail speed`, `θ` y **Reset trail**.
+
+En ambas páginas el botón **"Recargar NN"** vuelve a leer el modelo del disco, así
+que tras reentrenar (nuevo `lastexperiment/`) basta pulsarlo — sin reiniciar el
+servidor.
 
 `webapp.py` (visor Original vs Negativo):
 
