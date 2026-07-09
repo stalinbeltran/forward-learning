@@ -38,6 +38,10 @@ except ImportError:  # pragma: no cover - script fallback
 
 
 DEFAULT_FILE = "experiments/evolution/sequence.npz"
+# Cada entrenamiento se archiva aqui (gen_evolution.py / train_sequential.py) con
+# un nombre unico por timestamp, sin sobrescribir. El visor lista estos runs con
+# el mas reciente arriba y sirve el que elijas, sin reiniciar el servidor.
+DEFAULT_RUNS_DIR = "experiments/evolution/runs"
 # "NN actual": el experimento mas reciente vive siempre en lastexperiment/ (ver
 # CLAUDE.md). No se fija: se recarga por mtime, asi que si el modelo cambia en
 # disco la pagina de pruebas usa el nuevo sin reiniciar el servidor.
@@ -58,10 +62,11 @@ PAGE = """<!doctype html>
   .ctl { display:flex; gap:8px; align-items:center; }
   label { color:#9aa4b6; font-size:12px; }
   input[type=range] { width:130px; accent-color:#6ea8fe; }
-  button, a.btn { background:#161b26; color:#e6e9ef; border:1px solid #2a3242;
+  button, a.btn, select { background:#161b26; color:#e6e9ef; border:1px solid #2a3242;
            border-radius:6px; padding:5px 10px; font:inherit; }
-  button:hover, a.btn:hover { border-color:#3a4256; }
+  button:hover, a.btn:hover, select:hover { border-color:#3a4256; }
   a.btn { text-decoration:none; display:inline-block; }
+  select { max-width:420px; }
   #testlink { border-color:#2f6feb; color:#9ec1ff; }
   #applylink { border-color:#2f8f5f; color:#8fe0b0; }
   #refresh { border-color:#2f6feb; color:#9ec1ff; }
@@ -83,6 +88,7 @@ PAGE = """<!doctype html>
     <button id="reset">Reset trail</button><button id="refresh">Refrescar</button>
     <a class="btn" id="testlink" href="/test">Probar NN &#128300;</a>
     <a class="btn" id="applylink" href="/apply">Aplicar set &#127919;</a></div>
+  <div class="ctl"><label>entrenamiento</label><select id="run" title="mas reciente arriba"></select></div>
   <div class="ctl"><label>ms/step <span class="val" id="msv">40</span></label>
     <input type="range" id="ms" min="30" max="1500" step="10" value="40"></div>
   <div class="ctl"><label>trail speed <span class="val" id="rtv">0.30</span></label>
@@ -107,6 +113,7 @@ PAGE = """<!doctype html>
 <script>
 let META=null, SEQ=null, IMGSEQ=null, IMG=null, step=0, trail=null, timer=null, playing=true, thTouched=false;
 let blockEnd=null, heldAtBoundary=false;  // auto-pause on the last frame of each trained image
+let RUNS=[];  // archived trainings, most recent first (populated from /api/runs)
 const el = id => document.getElementById(id);
 
 function computeBlockEnds(){
@@ -198,18 +205,41 @@ el('play').onclick=()=>{
 };
 el('skip').onclick=()=>jumpTo(nextInputTarget());
 el('reset').onclick=()=>{resetTrail(); render();};
-el('refresh').onclick=()=>load(true);
+el('refresh').onclick=()=>refresh();
+el('run').onchange=()=>load(true);
 el('ms').oninput=()=>el('msv').textContent=el('ms').value;
 el('rt').oninput=()=>el('rtv').textContent=parseFloat(el('rt').value).toFixed(2);
 el('th').oninput=()=>{thTouched=true; el('thv').textContent=parseFloat(el('th').value).toFixed(2);};
 
+async function loadRuns(){
+  // Refresh the runs list (most recent first), keeping the current selection if
+  // it still exists; otherwise select the newest.
+  const prev = el('run').value;
+  try{ RUNS = (await (await fetch('/api/runs')).json()).runs || []; }
+  catch(e){ RUNS=[]; }
+  const sel = el('run'); sel.innerHTML='';
+  RUNS.forEach((r,i)=>{
+    const o=document.createElement('option'); o.value=r.file||r.path;
+    o.textContent=(i===0?'★ ':'')+r.label+'  ['+r.mtime+']';
+    sel.appendChild(o);
+  });
+  if(RUNS.length){
+    const keep = RUNS.find(r=>(r.file||r.path)===prev);
+    sel.value = keep ? prev : (RUNS[0].file||RUNS[0].path);
+  }
+}
+function selectedFile(){ return el('run').value || ''; }
+async function refresh(){ await loadRuns(); await load(true); }
+
 async function load(manual){
   try{
-    const meta=await (await fetch('/api/meta')).json();
+    const f = selectedFile();
+    const q = f ? ('?file='+encodeURIComponent(f)) : '';
+    const meta=await (await fetch('/api/meta'+q)).json();
     if(meta.error){ el('status').textContent='sin datos: '+meta.error; return; }
-    const seq=(await (await fetch('/api/seq')).json()).seq;
-    const img=(await (await fetch('/api/image')).json()).image;
-    const imgseq=meta.has_imgseq ? (await (await fetch('/api/imgseq')).json()).imgseq : null;
+    const seq=(await (await fetch('/api/seq'+q)).json()).seq;
+    const img=(await (await fetch('/api/image'+q)).json()).image;
+    const imgseq=meta.has_imgseq ? (await (await fetch('/api/imgseq'+q)).json()).imgseq : null;
     META=meta; SEQ=seq; IMG=img; IMGSEQ=imgseq; step=0;
     computeBlockEnds(); heldAtBoundary=false; el('apnote').textContent='';
     el('steps').textContent=SEQ.length-1;
@@ -219,7 +249,7 @@ async function load(manual){
     el('status').textContent=(manual?'refrescado ':'cargado ')+t+' · '+META.mtime;
   }catch(e){ el('status').textContent='error al cargar: '+e; }
 }
-(async()=>{ await load(false); tick(); })();
+(async()=>{ await loadRuns(); await load(false); tick(); })();
 </script></body></html>"""
 
 
@@ -247,6 +277,61 @@ def _load_file(path):
         ),
     }
     return meta, seq, image, imgseq
+
+
+def _run_entry(path):
+    """Lightweight descriptor of one sequence file for the runs list.
+
+    ``np.load`` is lazy, so reading only the small scalar/string fields does not
+    load the big ``seq`` array. Older files (pre-archive) miss the descriptive
+    metadata; a label is synthesised from whatever is present.
+    """
+    d = np.load(path, allow_pickle=False)
+
+    def g(k, default=None):
+        return d[k].item() if k in d.files else default
+
+    mtime = os.path.getmtime(path)
+    label = g("label")
+    if not label:
+        ii = int(g("image_index", 0))
+        steps = int(g("steps", 0))
+        who = "secuencial" if ii == -1 else f"img{ii}"
+        label = f"{who} · {steps}ép"
+    return {
+        "path": path.replace("\\", "/"),
+        "label": str(label),
+        "created": float(g("created", mtime)),
+        "mtime": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime)),
+        "script": str(g("script", "")),
+        "dataset": str(g("dataset", "")),
+        "model_source": str(g("model_source", "")),
+        "learning_rule": str(g("learning_rule", "")),
+        "steps": int(g("steps", 0)),
+    }
+
+
+def scan_runs(runs_dir, default_file):
+    """List archived runs (most recent first).
+
+    Sorted by the embedded ``created`` timestamp descending, so the last
+    training — and thus the last-trained NN — is at the top. The legacy fixed
+    file (``default_file``) is a mere copy of the latest run, so it is listed
+    only as a fallback when there are no archived runs at all.
+    """
+    runs = []
+    for path in glob.glob(os.path.join(runs_dir, "*.npz")):
+        try:
+            runs.append(_run_entry(path))
+        except Exception:
+            continue
+    if not runs and os.path.exists(default_file):
+        try:
+            runs.append(_run_entry(default_file))
+        except Exception:
+            pass
+    runs.sort(key=lambda r: r["created"], reverse=True)  # most recent first
+    return runs
 
 
 # --------------------------------------------------------------- test page ---
@@ -762,29 +847,49 @@ async function init(){
 </script></body></html>"""
 
 
-def make_handler(path, model_path=DEFAULT_MODEL):
-    # Cache payloads keyed by the file's mtime; rebuild only when the file changes.
-    cache = {"mtime": None, "payloads": None}
+def make_handler(default_file, model_path=DEFAULT_MODEL, runs_dir=DEFAULT_RUNS_DIR):
+    # Payloads are cached per file, keyed by mtime; rebuilt only when a file
+    # changes on disk. A request may select any archived run via ?file=, so we
+    # whitelist paths (the default file or anything under runs_dir) to avoid
+    # serving arbitrary files.
+    cache = {}  # resolved path -> {"mtime": ..., "payloads": (...)}
+    runs_real = os.path.realpath(runs_dir)
+    default_real = os.path.realpath(default_file)
 
-    def payloads():
-        if not os.path.exists(path):
-            err = json.dumps({"error": f"no existe {path} (corre gen_evolution.py)"}).encode()
+    def resolve(file_param):
+        """Map a ?file= value to an allowed absolute path, or None if rejected."""
+        if not file_param:
+            return default_file if os.path.exists(default_file) else None
+        real = os.path.realpath(file_param)
+        if real == default_real:
+            return file_param
+        if real.startswith(runs_real + os.sep) and real.endswith(".npz"):
+            return file_param
+        return None
+
+    def payloads(file_param):
+        path = resolve(file_param)
+        if path is None or not os.path.exists(path):
+            miss = file_param or default_file
+            err = json.dumps({"error": f"no existe/invalido {miss} (corre gen_evolution.py)"}).encode()
             return err, err, err, err
         mtime = os.path.getmtime(path)
-        if cache["mtime"] != mtime:
+        entry = cache.get(path)
+        if entry is None or entry["mtime"] != mtime:
             meta, seq, image, imgseq = _load_file(path)
-            cache["mtime"] = mtime
+            meta["file"] = path.replace("\\", "/")
             imgseq_p = (
                 json.dumps({"imgseq": imgseq.tolist()}).encode()
                 if imgseq is not None else json.dumps({"imgseq": None}).encode()
             )
-            cache["payloads"] = (
+            entry = {"mtime": mtime, "payloads": (
                 json.dumps(meta).encode(),
                 json.dumps({"seq": np.round(seq, 4).tolist()}).encode(),
                 json.dumps({"image": image.tolist()}).encode(),
                 imgseq_p,
-            )
-        return cache["payloads"]
+            )}
+            cache[path] = entry
+        return entry["payloads"]
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -831,14 +936,19 @@ def make_handler(path, model_path=DEFAULT_MODEL):
                 n_in = layer.n_in if layer is not None else None
                 self._json({"datasets": scan_datasets(n_in=n_in)})
                 return
-            meta_p, seq_p, image_p, imgseq_p = payloads()
-            if self.path == "/api/meta":
+            if self.path == "/api/runs":
+                self._json({"runs": scan_runs(runs_dir, default_file)})
+                return
+            file_param = parse_qs(urlparse(self.path).query).get("file", [None])[0]
+            meta_p, seq_p, image_p, imgseq_p = payloads(file_param)
+            base = urlparse(self.path).path
+            if base == "/api/meta":
                 self._send(meta_p, "application/json")
-            elif self.path == "/api/seq":
+            elif base == "/api/seq":
                 self._send(seq_p, "application/json")
-            elif self.path == "/api/image":
+            elif base == "/api/image":
                 self._send(image_p, "application/json")
-            elif self.path == "/api/imgseq":
+            elif base == "/api/imgseq":
                 self._send(imgseq_p, "application/json")
             else:
                 self.send_error(404)
@@ -866,20 +976,23 @@ def make_handler(path, model_path=DEFAULT_MODEL):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Persistence-trail viewer (pure server)")
-    ap.add_argument("--file", default=DEFAULT_FILE, help="sequence .npz to serve")
+    ap.add_argument("--file", default=DEFAULT_FILE,
+                    help="fallback sequence .npz (legacy 'latest' file)")
+    ap.add_argument("--runs-dir", default=DEFAULT_RUNS_DIR,
+                    help="dir con los runs archivados a listar (mas reciente arriba)")
     ap.add_argument("--model", default=DEFAULT_MODEL,
                     help="modelo de la 'NN actual' para la pagina /test "
                          "(por defecto el ultimo experimento en lastexperiment/)")
     ap.add_argument("--port", type=int, default=8000)
     args = ap.parse_args()
 
-    if not os.path.exists(args.file):
-        print(f"warning: {args.file} no existe todavia; "
+    if not os.path.exists(args.file) and not glob.glob(os.path.join(args.runs_dir, "*.npz")):
+        print(f"warning: no hay runs en {args.runs_dir} ni {args.file}; "
               f"corre gen_evolution.py y pulsa Refrescar en la pagina")
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port),
-                                 make_handler(args.file, args.model))
-    print(f"serving {args.file} at http://127.0.0.1:{args.port}  (Ctrl+C to stop)")
+                                 make_handler(args.file, args.model, args.runs_dir))
+    print(f"serving runs from {args.runs_dir} at http://127.0.0.1:{args.port}  (Ctrl+C to stop)")
     print(f"pagina de pruebas: http://127.0.0.1:{args.port}/test  (NN actual: {args.model})")
     print("re-run gen_evolution.py anytime, then click Refrescar (no restart needed)")
     try:

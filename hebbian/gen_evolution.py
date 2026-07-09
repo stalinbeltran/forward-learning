@@ -22,14 +22,17 @@ import numpy as np
 try:
     from .competitive_net import CompetitiveLayer
     from .train import build_layer
+    from .evolution_io import write_sequence
 except ImportError:  # pragma: no cover - script fallback
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from competitive_net import CompetitiveLayer
     from train import build_layer
+    from evolution_io import write_sequence
 
 
 DEFAULT_OUT = "experiments/evolution/sequence.npz"
+DEFAULT_RUNS_DIR = "experiments/evolution/runs"
 
 
 def build_sequence(layer, X, fixed, epochs, lr, seed,
@@ -79,6 +82,9 @@ def main() -> None:
     ap.add_argument("--persist-patience", type=int, default=5,
                     help="epochs a neuron must stay lit to count as persistent")
     ap.add_argument("--out", default=DEFAULT_OUT, help="sequence file to (over)write")
+    ap.add_argument("--runs-dir", default=DEFAULT_RUNS_DIR,
+                    help="archive dir where each run is also saved (never overwritten); "
+                         "'' to disable archiving")
     # fresh-layer hyperparameters (used only when --model is not given)
     ap.add_argument("--n-in", type=int, default=784)
     ap.add_argument("--grid", type=int, default=50)
@@ -120,20 +126,30 @@ def main() -> None:
     )
 
     side = int(round(X.shape[1] ** 0.5))
-    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    np.savez(
-        args.out,
-        seq=np.round(seq, 4).astype(np.float32),
-        image=(fixed * 255).astype(np.uint8),
-        side=np.int64(side),
-        map_h=np.int64(layer.grid_h),
-        map_w=np.int64(layer.grid_w),
-        steps=np.int64(len(seq) - 1),
-        image_index=np.int64(args.image_index),
-        fire_threshold=np.float64(layer.fire_threshold),
-        converged_at=np.int64(-1 if converged_at is None else converged_at),
+    steps = len(seq) - 1
+    src = os.path.basename(args.model) if args.model else "fresh"
+    label = (f"gen · {os.path.basename(args.dataset)} · img{args.image_index} · "
+             f"{steps}ép · lr{args.lr:g} · {layer.learning_rule} · {src}")
+    meta = {
+        "label": label,
+        "script": "gen_evolution",
+        "dataset": args.dataset.replace("\\", "/"),
+        "model_source": (args.model.replace("\\", "/") if args.model else "fresh"),
+        "learning_rule": layer.learning_rule,
+        "lr": args.lr,
+        "epochs": steps,
+        "nn_epochs": int(layer.epochs_trained),
+    }
+    out_path, archive = write_sequence(
+        args.out, args.runs_dir,
+        seq=seq, image=(fixed * 255).astype(np.uint8), side=side,
+        map_h=layer.grid_h, map_w=layer.grid_w,
+        image_index=args.image_index, fire_threshold=layer.fire_threshold,
+        converged_at=converged_at, meta=meta,
     )
-    print(f"wrote {args.out}  seq={seq.shape} (steps+1, n_out)")
+    print(f"wrote {out_path}  seq={seq.shape} (steps+1, n_out)")
+    if archive:
+        print(f"archived run -> {archive}")
 
 
 if __name__ == "__main__":

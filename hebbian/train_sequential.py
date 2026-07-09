@@ -28,11 +28,15 @@ import numpy as np
 try:
     from .competitive_net import CompetitiveLayer
     from .train import build_layer, load_dataset
+    from .evolution_io import write_sequence
 except ImportError:  # pragma: no cover - script execution fallback
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from competitive_net import CompetitiveLayer
     from train import build_layer, load_dataset
+    from evolution_io import write_sequence
+
+DEFAULT_RUNS_DIR = "experiments/evolution/runs"
 
 
 def train_image(layer, x, lr, max_epochs, min_persistence, persist_patience):
@@ -88,6 +92,9 @@ def main() -> None:
                     help="epochs a neuron must stay lit to count as persistent")
     ap.add_argument("--sequence", default="experiments/evolution/sequence.npz",
                     help="evolution sequence file to (over)write for the webapp viewer")
+    ap.add_argument("--runs-dir", default=DEFAULT_RUNS_DIR,
+                    help="archive dir where each run is also saved (never overwritten); "
+                         "'' to disable archiving")
     ap.add_argument("--resume", default=None, help="resume from a model.npz")
     # fresh-layer hyperparameters (used only when --resume is not given)
     ap.add_argument("--n-in", type=int, default=784)
@@ -159,21 +166,31 @@ def main() -> None:
     print(f"saved {model_path}")
     print(f"saved {csv_path}")
 
-    os.makedirs(os.path.dirname(args.sequence) or ".", exist_ok=True)
-    np.savez(
-        args.sequence,
-        seq=np.round(np.stack(seq), 4).astype(np.float32),
-        image=imgseq[0],
-        imgseq=np.stack(imgseq),
-        side=np.int64(side),
-        map_h=np.int64(layer.grid_h),
-        map_w=np.int64(layer.grid_w),
-        steps=np.int64(len(seq) - 1),
-        image_index=np.int64(-1),  # -1 = sequential run over the whole set
-        fire_threshold=np.float64(layer.fire_threshold),
-        converged_at=np.int64(-1),
+    seq_arr = np.stack(seq)
+    steps = len(seq) - 1
+    src = os.path.basename(args.resume) if args.resume else "fresh"
+    label = (f"seq · {os.path.basename(args.dataset)} · {len(X)}img · "
+             f"{steps}ép · lr{args.lr:g} · {layer.learning_rule} · {src}")
+    meta = {
+        "label": label,
+        "script": "train_sequential",
+        "dataset": args.dataset.replace("\\", "/"),
+        "model_source": (args.resume.replace("\\", "/") if args.resume else "fresh"),
+        "learning_rule": layer.learning_rule,
+        "lr": args.lr,
+        "epochs": steps,
+        "nn_epochs": int(layer.epochs_trained),
+    }
+    out_path, archive = write_sequence(
+        args.sequence, args.runs_dir,
+        seq=seq_arr, image=imgseq[0], imgseq=np.stack(imgseq), side=side,
+        map_h=layer.grid_h, map_w=layer.grid_w,
+        image_index=-1, fire_threshold=layer.fire_threshold,
+        converged_at=None, meta=meta,
     )
-    print(f"saved {args.sequence}  seq={np.stack(seq).shape} (steps+1, n_out)")
+    print(f"saved {out_path}  seq={seq_arr.shape} (steps+1, n_out)")
+    if archive:
+        print(f"archived run -> {archive}")
 
 
 if __name__ == "__main__":
