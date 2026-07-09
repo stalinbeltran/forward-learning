@@ -61,6 +61,10 @@ encendida congela todo salvo el disparo-con-entrada, que recibe `−hr`. Default
 - `webapp.py` — visor Original vs Negativo.
 - `gen_evolution.py` + `webapp_evolution.py` — visor de "persistence trail"
   (ver abajo).
+- `training_manager.py` — store de NNs (`experiments/nns/<nombre>/`) + gestor de
+  entrenamiento en background (crear/copiar NN, entrenar con stop). Es el back-end
+  de la página **`/train`** de `webapp_evolution.py`: entrenar desde el navegador
+  sin CLI (ver [comandos.md](comandos.md) §5).
 
 ## Visor de evolución del entrenamiento (desacoplado)
 

@@ -196,7 +196,8 @@ lo omiten y el panel queda fijo, como antes).
 .venv\Scripts\python.exe hebbian\webapp_evolution.py --port 8000
 ```
 
-Luego abre: http://127.0.0.1:8000 (visor) o http://127.0.0.1:8000/test (pruebas).
+Luego abre: http://127.0.0.1:8000 (visor), http://127.0.0.1:8000/train (entrenar;
+§5) o http://127.0.0.1:8000/test (pruebas).
 
 En el visor, la cabecera tiene **dos selectores**: **NN** (las redes entrenadas,
 la más reciente arriba con ★ y preseleccionada) y **secuencia** (los
@@ -249,6 +250,51 @@ Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
 > ```
 > for /f "tokens=5" %a in ('netstat -ano ^| findstr :8000 ^| findstr LISTENING') do taskkill /PID %a /F
 > ```
+
+---
+
+## 5. Entrenar una NN desde el navegador (`/train`)
+
+Con el servidor del §3 corriendo, abrí **http://127.0.0.1:8000/train** (o el botón
+**"Entrenar 🎉"** en la cabecera del visor). No hace falta la línea de comandos
+para entrenar: todo se hace en la página. El servidor mantiene **un** gestor de
+entrenamiento en un hilo de fondo (una corrida a la vez), que escribe la
+secuencia de evolución igual que `gen_evolution.py` (así el visor la muestra al
+pulsar **Refrescar**) y deja la NN entrenada como la **NN actual** de `/test`.
+
+Flujo de la página (cuatro pasos):
+
+1. **Elegí la NN a entrenar** — desplegable con las NNs del *store*
+   (`experiments/nns/<nombre>/`). Si está vacío:
+   - **Crear NN nueva** (pesos frescos): nombre + los hiperparámetros del modelo
+     (todos precargados con su default de la sección A; se pueden cambiar).
+   - **Copiar una NN existente**: elegí una fuente (cualquier `model.npz` del
+     disco: el store **y** los `experiments/*/model.npz` previos) y un nombre
+     nuevo. Copia **pesos + hiperparámetros + últimos parámetros de entrenamiento**
+     — útil para ramificar experimentos sin tocar la NN original.
+2. **Elegí el set de entrada** — lista todos los `.npz` de `data/` con su nº de
+   muestras, forma y dimensión. Los **incompatibles** con la entrada de la NN
+   elegida (`dim ≠ n_in`) quedan **bloqueados** (no se pueden seleccionar).
+3. **Parámetros del entrenamiento** — `lr`, `epochs`, `min_persistence`
+   (vacío = sin early-stop), `persist_patience`, `image_index` (cuál imagen
+   maneja el *persistence trail*) y `key`. Vienen precargados con los **últimos
+   valores usados por esa NN** (`train_params.json`) y se pueden cambiar por
+   corrida; al terminar se guardan como los nuevos defaults de esa NN.
+4. **Correr** — **Iniciar entrenamiento** (deshabilitado hasta elegir NN + set
+   compatible) y **Detener** (para la corrida en curso; escribe la secuencia
+   parcial y guarda la NN igual). La página muestra época/total, persistencia,
+   nº que disparan, ganadoras, cobertura y un log en vivo.
+
+Cada corrida (completa o detenida): guarda la NN en su carpeta del store
+(continúa entrenando en el sitio, acumulando `epochs_trained`), escribe
+`experiments/evolution/sequence.npz` + una copia archivada en
+`experiments/evolution/runs/`, y refresca `lastexperiment/` (`model.npz` +
+`META.txt`) para que `/test` use la NN recién entrenada.
+
+> **Nota — es un entrenamiento como cualquiera:** igual que las corridas por CLI,
+> conviene **anotarlo en [experiments.md](experiments.md)** si el resultado
+> importa (ver CLAUDE.md → "Registro de experimentos"). El store y
+> `experiments/`/`data/` están en `.gitignore`.
 
 ---
 
@@ -391,12 +437,15 @@ Además de todos los flags del modelo (sección A), tiene:
 | `--file` | `experiments/evolution/sequence.npz` | archivo fijo de respaldo (el "último"). |
 | `--runs-dir` | `experiments/evolution/runs` | carpeta de runs archivados a listar en el selector (más reciente arriba). |
 | `--model` | `lastexperiment/model.npz` | modelo de la **NN actual** para la página `/test` (el último experimento; se recarga por `mtime`, no queda fijo). |
+| `--store-dir` | `experiments/nns` | **store de NNs entrenables** desde la página `/train` (cada NN es una subcarpeta con `model.npz` + `train_params.json`). |
 | `--port` | `8000` | puerto HTTP. |
 
-El mismo servidor sirve **tres páginas** (mismo puerto), enlazadas entre sí desde
-la cabecera del visor:
+El mismo servidor sirve **cuatro páginas** (mismo puerto), enlazadas entre sí
+desde la cabecera del visor:
 
 - `/` — **visor de entrenamiento** (persistence trail; §3 arriba).
+- `/train` — **entrenar una NN desde el navegador** (crear/copiar NN, elegir set,
+  parámetros, iniciar/detener; §5 abajo).
 - `/test` — **análisis agregado** de aplicar sets a la NN actual.
 - `/apply` — **replay visual** de aplicar un set a la NN entrenada, entrada por
   entrada.

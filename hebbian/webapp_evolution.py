@@ -30,11 +30,13 @@ from urllib.parse import urlparse, parse_qs
 try:
     from .competitive_net import CompetitiveLayer
     from . import metrics as M
+    from . import training_manager as TM
 except ImportError:  # pragma: no cover - script fallback
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from competitive_net import CompetitiveLayer
     import metrics as M
+    import training_manager as TM
 
 
 DEFAULT_FILE = "experiments/evolution/sequence.npz"
@@ -67,6 +69,7 @@ PAGE = """<!doctype html>
   button:hover, a.btn:hover, select:hover { border-color:#3a4256; }
   a.btn { text-decoration:none; display:inline-block; }
   select { max-width:420px; }
+  #trainlink { border-color:#8a5cf6; color:#c4b5fd; }
   #testlink { border-color:#2f6feb; color:#9ec1ff; }
   #applylink { border-color:#2f8f5f; color:#8fe0b0; }
   #refresh { border-color:#2f6feb; color:#9ec1ff; }
@@ -86,6 +89,7 @@ PAGE = """<!doctype html>
   <h1>persistence trail &middot; epoch <span class="val" id="ep">0</span>/<span id="steps">?</span></h1>
   <div class="ctl"><button id="play">Pause</button><button id="skip">Saltar &#9197;</button>
     <button id="reset">Reset trail</button><button id="refresh">Refrescar</button>
+    <a class="btn" id="trainlink" href="/train">Entrenar &#127981;</a>
     <a class="btn" id="testlink" href="/test">Probar NN &#128300;</a>
     <a class="btn" id="applylink" href="/apply">Aplicar set &#127919;</a></div>
   <div class="ctl"><label>NN</label><select id="nn" title="red entrenada; mas reciente arriba"></select></div>
@@ -907,7 +911,301 @@ async function init(){
 </script></body></html>"""
 
 
-def make_handler(default_file, model_path=DEFAULT_MODEL, runs_dir=DEFAULT_RUNS_DIR):
+TRAIN_PAGE = """<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Entrenar NN</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; background:#0b0d12; color:#e6e9ef; font:14px/1.5 system-ui, sans-serif; }
+  header { padding:14px 18px; border-bottom:1px solid #222836;
+           display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:600; }
+  h2 { font-size:13px; color:#9aa4b6; font-weight:600; margin:0 0 12px;
+       text-transform:uppercase; letter-spacing:.06em; }
+  h3 { font-size:12px; color:#9aa4b6; font-weight:600; margin:14px 0 8px; }
+  button, a.btn, select, input, summary { background:#161b26; color:#e6e9ef;
+       border:1px solid #2a3242; border-radius:6px; padding:5px 9px; font:inherit; }
+  button, a.btn, summary, select { cursor:pointer; }
+  button:hover, a.btn:hover, select:hover { border-color:#3a4256; }
+  a.btn { text-decoration:none; display:inline-block; }
+  button.primary { border-color:#8a5cf6; color:#c4b5fd; }
+  button.go { border-color:#2f8f5f; color:#8fe0b0; }
+  button.stop { border-color:#c0392b; color:#f0a094; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .dim { color:#6b7488; font-size:12px; }
+  .val { font-variant-numeric:tabular-nums; color:#6ea8fe; }
+  main { padding:22px 18px; display:flex; flex-direction:column; gap:20px; max-width:1080px; }
+  .panel { border:1px solid #222836; border-radius:8px; padding:18px; background:#0f131b; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:8px 0; }
+  label { color:#9aa4b6; font-size:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px 16px; }
+  .fld { display:flex; flex-direction:column; gap:3px; }
+  .fld input, .fld select { width:100%; box-sizing:border-box; }
+  select.wide { min-width:320px; }
+  .badge { font-size:11px; padding:2px 7px; border-radius:10px; font-weight:600; }
+  .ok { background:#12331f; color:#5fd08a; }
+  .bad { background:#3a1520; color:#f08497; }
+  .dsrow { display:flex; gap:10px; align-items:center; padding:5px 8px; border-radius:6px; }
+  .dsrow:hover { background:#141a24; }
+  .dsrow.sel { background:#1a2130; outline:1px solid #2f6feb55; }
+  #nninfo, #dsinfo { font-size:12px; }
+  #log { background:#080a0f; border:1px solid #1c2431; border-radius:6px; padding:10px;
+         height:190px; overflow:auto; font:12px/1.45 ui-monospace,monospace; white-space:pre-wrap; }
+  .stat { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:10px; }
+  .tile { border:1px solid #222836; border-radius:8px; padding:8px 12px; min-width:96px; }
+  .tile .k { font-size:11px; color:#9aa4b6; text-transform:uppercase; }
+  .tile .v { font-size:18px; font-weight:600; font-variant-numeric:tabular-nums; }
+  progress { width:260px; height:12px; }
+</style></head>
+<body>
+<header>
+  <h1>entrenar NN</h1>
+  <a class="btn" href="/">&larr; visor</a>
+  <a class="btn" href="/test">/test</a>
+  <a class="btn" href="/apply">/apply</a>
+  <button id="reload">Recargar listas</button>
+  <span id="msg" class="dim"></span>
+</header>
+<main>
+  <section class="panel">
+    <h2>1 &middot; Elegí la NN a entrenar</h2>
+    <div class="row">
+      <label>NN del store</label>
+      <select id="nn" class="wide" title="redes en experiments/nns; entrenables"></select>
+    </div>
+    <div id="nninfo" class="dim"></div>
+    <details><summary>Crear NN nueva (pesos frescos)</summary>
+      <div class="row"><label>nombre</label><input id="new_name" placeholder="mi_red"></div>
+      <div class="grid" id="modelparams"></div>
+      <div class="row"><button id="create" class="primary">Crear NN</button>
+        <span id="createmsg" class="dim"></span></div>
+    </details>
+    <details><summary>Copiar una NN existente (para experimentar sobre otra)</summary>
+      <div class="row"><label>fuente</label><select id="copysrc" class="wide"></select></div>
+      <div class="row"><label>nombre nuevo</label><input id="copy_name" placeholder="copia_de_...">
+        <button id="copy" class="primary">Copiar NN</button>
+        <span id="copymsg" class="dim"></span></div>
+      <p class="dim">Copia pesos + hiperparámetros + últimos parámetros de entrenamiento.</p>
+    </details>
+  </section>
+
+  <section class="panel">
+    <h2>2 &middot; Elegí el set de entrada</h2>
+    <p class="dim">Todos los sets de <b>data/</b>. Los incompatibles con la entrada de la NN
+      elegida (dim &ne; n_in) quedan bloqueados.</p>
+    <div id="datasets"></div>
+    <div id="dsinfo" class="dim"></div>
+  </section>
+
+  <section class="panel">
+    <h2>3 &middot; Parámetros del entrenamiento</h2>
+    <p class="dim">Vienen precargados con los últimos valores usados por esta NN; cambialos por corrida.</p>
+    <div class="grid" id="trainparams"></div>
+  </section>
+
+  <section class="panel">
+    <h2>4 &middot; Correr</h2>
+    <div class="row">
+      <button id="start" class="go">Iniciar entrenamiento</button>
+      <button id="stop" class="stop" disabled>Detener</button>
+      <span id="runmsg"></span>
+    </div>
+    <div class="stat" id="tiles"></div>
+    <div class="row"><progress id="prog" value="0" max="1"></progress>
+      <span id="progtxt" class="dim"></span></div>
+    <div id="log"></div>
+    <p class="dim">Al terminar (o detener) se escribe la secuencia de evolución:
+      abrí el <a href="/">visor</a> y pulsá <b>Refrescar</b>. La NN entrenada queda como
+      la <b>NN actual</b> de <a href="/test">/test</a>.</p>
+  </section>
+</main>
+<script>
+let MODELS=null, DATASETS=[], SELDS=null, POLL=null;
+const el = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// --- field descriptors (model hyperparameters + training params) -----------
+const ENUMS = {
+  rule:['above_mean','softmax','wta'],
+  learning_rule:['gate','truth_table'],
+  inhib_metric:['cheby','manhattan','euclid'],
+  inhib_mode:['fraction','hinge','sigmoid'],
+};
+const MODEL_FIELDS = ['n_in','grid','rule','reinforce_gain','learning_rule',
+  'rule_n','rule_m','rule_hr','inhib_on','inhib_spacing','inhib_radius',
+  'inhib_metric','fire_threshold','inhib_K','inhib_gain','inhib_mode','seed'];
+const TRAIN_FIELDS = ['lr','epochs','min_persistence','persist_patience','image_index','key'];
+
+function fieldInput(key, val){
+  if(key==='inhib_on'){
+    return '<input type="checkbox" id="mp_'+key+'"'+(val?' checked':'')+'>';
+  }
+  if(ENUMS[key]){
+    return '<select id="mp_'+key+'">'+ENUMS[key].map(o=>
+      '<option'+(o===val?' selected':'')+'>'+o+'</option>').join('')+'</select>';
+  }
+  const v = (val===null||val===undefined)?'':val;
+  return '<input id="mp_'+key+'" value="'+esc(v)+'">';
+}
+function renderModelForm(defaults){
+  el('modelparams').innerHTML = MODEL_FIELDS.map(k=>
+    '<div class="fld"><label>'+k+'</label>'+fieldInput(k, defaults[k])+'</div>').join('');
+}
+function readModelForm(){
+  const p={};
+  MODEL_FIELDS.forEach(k=>{
+    const e=el('mp_'+k);
+    if(k==='inhib_on') p[k]=e.checked;
+    else if(ENUMS[k]) p[k]=e.value;
+    else p[k]=e.value;
+  });
+  return p;
+}
+function renderTrainForm(tp){
+  el('trainparams').innerHTML = TRAIN_FIELDS.map(k=>{
+    const v=(tp[k]===null||tp[k]===undefined)?'':tp[k];
+    const ph = k==='min_persistence' ? ' placeholder="(vacío = sin early-stop)"' : '';
+    return '<div class="fld"><label>'+k+'</label><input id="tp_'+k+'" value="'+esc(v)+'"'+ph+'></div>';
+  }).join('');
+}
+function readTrainForm(){
+  const p={};
+  TRAIN_FIELDS.forEach(k=>{ p[k]=el('tp_'+k).value; });
+  // normalize types
+  p.lr=parseFloat(p.lr); p.epochs=parseInt(p.epochs);
+  p.persist_patience=parseInt(p.persist_patience); p.image_index=parseInt(p.image_index);
+  p.min_persistence = (p.min_persistence==='') ? null : parseFloat(p.min_persistence);
+  return p;
+}
+
+function selectedNn(){ return MODELS.store.find(n=>n.id===el('nn').value); }
+function renderNnInfo(){
+  const n=selectedNn();
+  if(!n){ el('nninfo').textContent='no hay NNs en el store; creá una abajo.'; return; }
+  el('nninfo').innerHTML = 'entrada <b>'+n.n_in+'</b> · mapa '+n.grid_h+'×'+n.grid_w
+    +' ('+n.n_out+') · regla <b>'+esc(n.learning_rule)+'</b> · θ '+n.fire_threshold
+    +' · '+n.epochs_trained+' épocas · guardada '+esc(n.mtime);
+  renderTrainForm(n.train_params||{});
+  renderDatasets();
+}
+function renderDatasets(){
+  const n=selectedNn(), box=el('datasets'); box.innerHTML='';
+  DATASETS.forEach((d,i)=>{
+    const compat = n ? (d.dim===n.n_in) : true;
+    const row=document.createElement('div');
+    row.className='dsrow'+(SELDS===d.path?' sel':'');
+    const badge = !n ? '' : (compat
+      ? '<span class="badge ok">compatible</span>'
+      : '<span class="badge bad">dim '+d.dim+' ≠ '+n.n_in+'</span>');
+    row.innerHTML='<input type="radio" name="ds" '+(compat?'':'disabled')+
+      (SELDS===d.path?' checked':'')+'>'+
+      '<label><b>'+esc(d.path)+'</b></label>'+
+      '<span class="dim">'+d.n+' imgs · '+d.shape.slice(1).join('×')+' · dim '+d.dim+'</span>'+badge;
+    row.querySelector('input').onclick=()=>{ if(compat){ SELDS=d.path; renderDatasets(); updateStart(); } };
+    box.appendChild(row);
+  });
+  const n2=selectedNn();
+  const sd=DATASETS.find(d=>d.path===SELDS);
+  if(sd && n2 && sd.dim!==n2.n_in){ SELDS=null; }
+  updateStart();
+}
+function updateStart(){
+  const n=selectedNn(), sd=DATASETS.find(d=>d.path===SELDS);
+  const ok = n && sd && sd.dim===n.n_in && (!STATUS || STATUS.state!=='running');
+  el('start').disabled=!ok;
+  el('dsinfo').textContent = sd ? ('set elegido: '+sd.path+' · '+sd.n+' imgs') : 'elegí un set compatible';
+}
+
+let STATUS=null;
+function renderStatus(s){
+  STATUS=s;
+  const running = s.state==='running';
+  el('start').disabled = running; el('stop').disabled = !running;
+  if(!running) updateStart();
+  const tiles=[['estado',s.state],['época',(s.epoch||0)+'/'+(s.total||'?')],
+    ['persistencia',s.persistence!=null?s.persistence:'—'],
+    ['disparan',s.n_fired!=null?s.n_fired:'—'],
+    ['ganadoras',s.unique_winners!=null?s.unique_winners:'—'],
+    ['cobertura',s.coverage!=null?s.coverage:'—']];
+  el('tiles').innerHTML=tiles.map(([k,v])=>
+    '<div class="tile"><div class="k">'+k+'</div><div class="v">'+esc(v)+'</div></div>').join('');
+  const tot=s.total||1; el('prog').max=tot; el('prog').value=s.epoch||0;
+  el('progtxt').textContent = s.converged_at ? ('convergió en '+s.converged_at) : '';
+  el('log').textContent=(s.log||[]).join('\\n'); el('log').scrollTop=el('log').scrollHeight;
+  if(s.error) el('runmsg').innerHTML='<span class="badge bad">'+esc(s.error)+'</span>';
+  else if(s.state==='done') el('runmsg').innerHTML='<span class="badge ok">listo</span> · refrescá el visor';
+  else if(s.state==='stopped') el('runmsg').innerHTML='<span class="badge bad">detenido</span> · secuencia parcial escrita';
+  else el('runmsg').textContent='';
+}
+async function poll(){
+  try{ const s=await (await fetch('/api/train/status')).json(); renderStatus(s);
+    if(s.state==='running'){ if(!POLL) POLL=setInterval(poll, 600); }
+    else if(POLL){ clearInterval(POLL); POLL=null; await loadModels(); }
+  }catch(e){}
+}
+
+async function loadModels(){
+  MODELS = await (await fetch('/api/models')).json();
+  renderModelForm(MODELS.defaults.model);
+  // NN selector (store, trainable)
+  const prev=el('nn').value, sel=el('nn'); sel.innerHTML='';
+  MODELS.store.forEach(n=>{ const o=document.createElement('option');
+    o.value=n.id; o.textContent=n.name+'  ('+n.n_in+'→'+n.n_out+', '+n.epochs_trained+'ép)';
+    sel.appendChild(o); });
+  if(MODELS.store.length){ sel.value = MODELS.store.find(n=>n.id===prev)?prev:MODELS.store[0].id; }
+  // copy-source selector (store + prior experiments)
+  const cs=el('copysrc'); cs.innerHTML='';
+  MODELS.copy_sources.forEach(n=>{ const o=document.createElement('option');
+    o.value=n.id; o.textContent=n.name+'  ('+n.n_in+'→'+n.n_out+(n.in_store?', store':'')+')';
+    cs.appendChild(o); });
+  renderNnInfo();
+}
+async function loadDatasets(){
+  DATASETS=(await (await fetch('/api/datasets')).json()).datasets;
+  renderDatasets();
+}
+async function reloadAll(){ await loadModels(); await loadDatasets(); await poll(); }
+
+el('nn').onchange=()=>{ renderNnInfo(); };
+el('reload').onclick=reloadAll;
+el('create').onclick=async()=>{
+  el('createmsg').textContent='creando…';
+  const body={name:el('new_name').value, model_params:readModelForm()};
+  const r=await (await fetch('/api/nn/new',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+  if(!r.ok){ el('createmsg').textContent='error: '+r.error; return; }
+  el('createmsg').textContent='creada: '+r.entry.name;
+  await loadModels(); el('nn').value=r.entry.id; renderNnInfo();
+};
+el('copy').onclick=async()=>{
+  el('copymsg').textContent='copiando…';
+  const body={name:el('copy_name').value, source:el('copysrc').value};
+  const r=await (await fetch('/api/nn/copy',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+  if(!r.ok){ el('copymsg').textContent='error: '+r.error; return; }
+  el('copymsg').textContent='copiada: '+r.entry.name;
+  await loadModels(); el('nn').value=r.entry.id; renderNnInfo();
+};
+el('start').onclick=async()=>{
+  const n=selectedNn(); if(!n||!SELDS) return;
+  el('runmsg').textContent='iniciando…';
+  const body={nn:n.id, dataset:SELDS, train_params:readTrainForm()};
+  const r=await (await fetch('/api/train/start',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+  if(!r.ok){ el('runmsg').innerHTML='<span class="badge bad">'+esc(r.error)+'</span>'; return; }
+  await poll();
+};
+el('stop').onclick=async()=>{
+  el('stop').disabled=true;
+  await fetch('/api/train/stop',{method:'POST'}); await poll();
+};
+reloadAll();
+</script></body></html>"""
+
+
+def make_handler(default_file, model_path=DEFAULT_MODEL, runs_dir=DEFAULT_RUNS_DIR,
+                 store_dir=TM.STORE_DIR):
     # Payloads are cached per file, keyed by mtime; rebuilt only when a file
     # changes on disk. A request may select any archived run via ?file=, so we
     # whitelist paths (the default file or anything under runs_dir) to avoid
@@ -915,6 +1213,13 @@ def make_handler(default_file, model_path=DEFAULT_MODEL, runs_dir=DEFAULT_RUNS_D
     cache = {}  # resolved path -> {"mtime": ..., "payloads": (...)}
     runs_real = os.path.realpath(runs_dir)
     default_real = os.path.realpath(default_file)
+    # Single background trainer shared by every request thread. It writes the
+    # evolution sequence to the same fixed file the viewer serves, archives the
+    # run, and refreshes lastexperiment/ (so /test reflects the trained NN).
+    trainer = TM.TrainingManager(
+        store_dir=store_dir, sequence_out=default_file, runs_dir=runs_dir,
+        lastexperiment_dir=os.path.dirname(model_path) or TM.LASTEXPERIMENT_DIR,
+    )
 
     def resolve(file_param):
         """Map a ?file= value to an allowed absolute path, or None if rejected."""
@@ -975,6 +1280,20 @@ def make_handler(default_file, model_path=DEFAULT_MODEL, runs_dir=DEFAULT_RUNS_D
             if self.path == "/apply" or self.path.startswith("/apply?"):
                 self._send(APPLY_PAGE.encode(), "text/html; charset=utf-8")
                 return
+            if self.path == "/train" or self.path.startswith("/train?"):
+                self._send(TRAIN_PAGE.encode(), "text/html; charset=utf-8")
+                return
+            if self.path == "/api/models":
+                self._json({
+                    "store": TM.list_store_nns(store_dir),
+                    "copy_sources": TM.list_copy_sources(store_dir),
+                    "defaults": {"model": TM.DEFAULT_MODEL_PARAMS,
+                                 "train": TM.DEFAULT_TRAIN_PARAMS},
+                })
+                return
+            if self.path == "/api/train/status":
+                self._json(trainer.status())
+                return
             if self.path.startswith("/api/apply"):
                 layer, info = load_current_model(model_path)
                 if layer is None:
@@ -1016,7 +1335,46 @@ def make_handler(default_file, model_path=DEFAULT_MODEL, runs_dir=DEFAULT_RUNS_D
             else:
                 self.send_error(404)
 
+        def _read_body(self):
+            length = int(self.headers.get("Content-Length", 0))
+            if not length:
+                return {}
+            return json.loads(self.rfile.read(length) or b"{}")
+
         def do_POST(self):
+            # --- training control ------------------------------------------
+            if self.path == "/api/train/stop":
+                self._json(trainer.stop())
+                return
+            if self.path == "/api/train/start":
+                try:
+                    body = self._read_body()
+                except Exception as e:
+                    self._json({"ok": False, "error": f"body invalido: {e}"})
+                    return
+                self._json(trainer.start(body.get("nn", ""), body.get("dataset", ""),
+                                         body.get("train_params", {})))
+                return
+            if self.path == "/api/nn/new":
+                try:
+                    body = self._read_body()
+                    entry = TM.create_new_nn(store_dir, body.get("name", ""),
+                                             body.get("model_params", {}),
+                                             body.get("train_params"))
+                    self._json({"ok": True, "entry": entry})
+                except Exception as e:
+                    self._json({"ok": False, "error": str(e)})
+                return
+            if self.path == "/api/nn/copy":
+                try:
+                    body = self._read_body()
+                    entry = TM.copy_nn(store_dir, body.get("name", ""),
+                                       body.get("source", ""))
+                    self._json({"ok": True, "entry": entry})
+                except Exception as e:
+                    self._json({"ok": False, "error": str(e)})
+                return
+            # --- /test evaluate --------------------------------------------
             if self.path != "/api/evaluate":
                 self.send_error(404)
                 return
@@ -1024,9 +1382,8 @@ def make_handler(default_file, model_path=DEFAULT_MODEL, runs_dir=DEFAULT_RUNS_D
             if layer is None:
                 self._json({"ok": False, "error": info.get("error", "sin modelo")})
                 return
-            length = int(self.headers.get("Content-Length", 0))
             try:
-                body = json.loads(self.rfile.read(length) or b"{}")
+                body = self._read_body()
             except Exception as e:
                 self._json({"ok": False, "error": f"body invalido: {e}"})
                 return
@@ -1046,6 +1403,9 @@ def main() -> None:
     ap.add_argument("--model", default=DEFAULT_MODEL,
                     help="modelo de la 'NN actual' para la pagina /test "
                          "(por defecto el ultimo experimento en lastexperiment/)")
+    ap.add_argument("--store-dir", default=TM.STORE_DIR,
+                    help="store de NNs entrenables desde /train (por defecto "
+                         "experiments/nns)")
     ap.add_argument("--port", type=int, default=8000)
     args = ap.parse_args()
 
@@ -1053,10 +1413,12 @@ def main() -> None:
         print(f"warning: no hay runs en {args.runs_dir} ni {args.file}; "
               f"corre gen_evolution.py y pulsa Refrescar en la pagina")
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.port),
-                                 make_handler(args.file, args.model, args.runs_dir))
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", args.port),
+        make_handler(args.file, args.model, args.runs_dir, args.store_dir))
     print(f"serving runs from {args.runs_dir} at http://127.0.0.1:{args.port}  (Ctrl+C to stop)")
     print(f"pagina de pruebas: http://127.0.0.1:{args.port}/test  (NN actual: {args.model})")
+    print(f"entrenar NNs:      http://127.0.0.1:{args.port}/train  (store: {args.store_dir})")
     print("re-run gen_evolution.py anytime, then click Refrescar (no restart needed)")
     try:
         server.serve_forever()
