@@ -143,3 +143,17 @@ a la vista, tomar el resultado de ahí (converge / no, ganador, persistencia).
 
 Construir en capas y verificar cada una ejecutándola antes de continuar.
 Reportar resultados con la evidencia real (salida de los comandos).
+
+## Commit al terminar cada tarea (obligatorio)
+
+Cada vez que el usuario pida algo, **al completar la tarea hacer `git commit`** de
+los cambios, sin que haga falta pedirlo. Reglas:
+
+- Commit solo cuando la tarea esté terminada y verificada (no a mitad de camino).
+- Mensaje claro de qué se hizo, terminado con la línea `Co-Authored-By: …` que
+  usa este entorno.
+- Si la tarea no tocó archivos versionados (p. ej. solo artefactos en
+  `experiments/`/`data/`, que están en `.gitignore`), no hay nada que commitear:
+  decirlo y seguir.
+- Actualizar también los registros obligatorios del repo (`comandos.md`,
+  `experiments.md`) **en el mismo commit** cuando apliquen.
